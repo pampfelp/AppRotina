@@ -52,7 +52,7 @@ import { montarTelaLogin, observarSessao, sair } from "./auth.js";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
-  diagnosticoAgenda,
+  diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
 } from "./agenda.js";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
@@ -60,7 +60,7 @@ import {
   montarBadgeSincronizacao, rastrearSincronizacao, tooltipGrafico,
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
-  horaEmMinutos, gerarId, slugId, fmtData,
+  horaEmMinutos, gerarId, slugId, fmtDataHora,
 } from "./shared.js";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
@@ -1564,8 +1564,21 @@ function modalAgenda() {
      ${d.ultimoErro ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Último erro da API, em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
-        <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code></span>
+        <span>
+          <strong>${d.ultimoErro.origem === "firestore"
+            ? "As regras do Firestore recusaram a gravação."
+            : d.ultimoErro.origem === "calendar"
+              ? "O Google Agenda recusou a chamada."
+              : "A sincronização falhou."}</strong>
+          ${d.ultimoErro.origem === "firestore" ? `
+            <br>Quem recusa isso são as <code>firestore.rules</code>, não o Google.
+            O evento é criado e o app não consegue guardar o id dele.
+            Republicar as regras do repositório no console do Firebase resolve
+            (passo 4 do README).` : ""}
+          ${d.ultimoErro.desfeito ? `<br>O evento criado nessa tentativa foi apagado, pra não sobrar duplicata.` : ""}
+          <br><br>Em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
+          <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code>
+        </span>
       </div>` : ""}
      ${conectada && !faltando && !d.ultimoErro ? `
       <div class="aviso info">
@@ -1583,6 +1596,7 @@ function modalAgenda() {
        <span class="rot">Última sincronização</span>
        <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "nunca nesta sessão"}</span>
      </div>
+     ${conectada ? `<button type="button" class="btn danger bloco" id="a-desconectar" style="margin-top:14px;">Desconectar do Google Agenda</button>` : ""}
 
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
@@ -1595,9 +1609,11 @@ function modalAgenda() {
        O que depende de você abrir o app: uma tarefa que vence num dia em que você
        nunca abriu ganha a cobrança só na próxima abertura.</span>
      </div>`,
-    `${conectada ? `<button type="button" class="btn danger" id="a-desconectar">Desconectar</button>` : `<span></span>`}
+    `${conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
      <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`
   );
+
+  $("a-limpar")?.addEventListener("click", modalOrfaos);
 
   $("a-desconectar")?.addEventListener("click", () => {
     desconectarAgenda();
@@ -1611,6 +1627,78 @@ function modalAgenda() {
     await sincronizarAgenda({
       rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, silencioso: false,
     });
+  });
+}
+
+/*
+  Varredura de evento órfão na agenda.
+
+  Apagar da agenda de alguém é destrutivo, irreversível e aparece pra quem
+  compartilha o calendário. Então a função nunca apaga sozinha: ela lista,
+  mostra título e data de cada um, e só apaga depois de ele confirmar.
+*/
+async function modalOrfaos() {
+  fecharModal();
+  toast("Procurando na sua agenda…", "info", 3000);
+
+  let orfaos;
+  try {
+    orfaos = await procurarEventosOrfaos({ rotinas: STATE.rotinas, tarefas: STATE.tarefas });
+  } catch (err) {
+    return toast(err.message || "Não foi possível procurar.", "erro", 8000);
+  }
+
+  if (!orfaos.length) {
+    return abrirModal("Duplicatas na agenda",
+      `<div class="aviso info">
+         <span class="ico">${ICONS.info}</span>
+         <span>Nenhum evento solto. Tudo que o app criou na sua agenda nos
+         últimos 120 dias está sendo gerenciado por ele.</span>
+       </div>`);
+  }
+
+  abrirModal("Duplicatas na agenda",
+    `<div class="aviso">
+       <span class="ico">${ICONS.alerta}</span>
+       <span>Encontrei <strong>${orfaos.length}</strong> evento(s) que este app
+       criou e não consegue mais gerenciar: nenhuma rotina ou tarefa aponta pra
+       eles, então nunca vão ser atualizados nem apagados sozinhos. Quase sempre
+       são duplicatas de uma gravação que falhou.</span>
+     </div>
+     <div class="aviso info">
+       <span class="ico">${ICONS.info}</span>
+       <span>Confira a lista antes. Apagar evento da agenda não tem como desfazer.</span>
+     </div>
+     <div class="table-wrap">
+       <table>
+         <thead><tr><th>Evento</th><th>Quando</th><th>Tipo</th></tr></thead>
+         <tbody>
+           ${orfaos.map((o) => `
+             <tr>
+               <td class="larga">${esc(o.titulo)}</td>
+               <td class="num">${esc(o.quando ? fmtDataHora(o.quando) : "—")}</td>
+               <td>${o.recorrente ? `<span class="pill warn">série</span>` : `<span class="pill neutro">único</span>`}</td>
+             </tr>`).join("")}
+         </tbody>
+       </table>
+     </div>`,
+    `<button type="button" class="btn" data-fechar-modal>Deixar como está</button>
+     <button type="button" class="btn danger" id="o-apagar">Apagar os ${orfaos.length}</button>`
+  );
+
+  $("o-apagar").addEventListener("click", async () => {
+    fecharModal();
+    const ok = await confirmar(
+      `Apagar ${orfaos.length} evento(s) da sua Google Agenda? Isso não tem como desfazer.`,
+      { textoConfirmar: `Apagar ${orfaos.length}` }
+    );
+    if (!ok) return;
+    toast("Apagando…", "info", 3000);
+    const { apagados, falhas } = await apagarOrfaos(orfaos.map((o) => o.id));
+    toast(
+      falhas ? `${apagados} apagado(s), ${falhas} falharam.` : `${apagados} evento(s) apagado(s) da agenda.`,
+      falhas ? "erro" : "sucesso", 8000
+    );
   });
 }
 

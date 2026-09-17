@@ -62,9 +62,19 @@ service cloud.firestore {
            ])
         && textoCheio(request.resource.data.nome, 80)
         && horaHM(request.resource.data.hora)
-        // a rotina sempre tem categoria própria: sem atividade cadastrada,
-        // ela é a própria atividade (crença nova, 2026-09-18)
-        && textoCheio(request.resource.data.categoriaId, 60)
+        /*
+          A rotina sempre tem categoria própria: sem atividade cadastrada,
+          ela é a própria atividade (decisão de 2026-09-18).
+
+          Mesmo assim o campo é ACEITO AUSENTE de propósito, porque rotina
+          criada antes dessa decisão não o tem, e exigir aqui faria TODA
+          gravação nessas rotinas antigas ser
+          recusada: trocaria um problema em duas rotinas por um problema em
+          oito. Regra é piso, não contrato do app. O app sempre grava o
+          campo; a regra só impede valor inválido.
+        */
+        && (!("categoriaId" in request.resource.data)
+            || textoCheio(request.resource.data.categoriaId, 60))
         && request.resource.data.duracaoMin is int
         && request.resource.data.duracaoMin >= 5
         && request.resource.data.duracaoMin <= 600
