@@ -314,13 +314,13 @@ async function materializar() {
 
 /**
  * Ação explícita (botão em Rotinas fixas): lança de uma vez o que falta das
- * rotinas ativas pros próximos `dias` dias, incluindo hoje. Diferente de
+ * rotinas ativas de hoje e dos próximos `dias` dias. Diferente de
  * materializar(), não mexe em `config/estado.ultimaMaterializacao` — aquele
  * marcador é só da recuperação automática de dias passados perdidos.
  */
 async function lancarProximosDias(dias) {
   const inicio = STATE.hoje;
-  const fim = somarDiasISO(inicio, dias - 1);
+  const fim = somarDiasISO(inicio, dias); // inclui hoje + `dias` dias à frente
 
   const existentes = new Set();
   try {
@@ -342,7 +342,7 @@ async function lancarProximosDias(dias) {
     }
   }
 
-  if (!novas.length) return toast("Já está tudo lançado pros próximos 7 dias.", "info");
+  if (!novas.length) return toast("Já está tudo lançado até lá.", "info");
 
   for (let i = 0; i < novas.length; i += 450) {
     const batch = writeBatch(db);
@@ -350,7 +350,7 @@ async function lancarProximosDias(dias) {
     const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar as rotinas dos próximos dias.");
     if (!ok) return;
   }
-  toast(`${novas.length} tarefa${novas.length > 1 ? "s" : ""} lançada${novas.length > 1 ? "s" : ""} pros próximos ${dias} dias.`, "sucesso");
+  toast(`${novas.length} tarefa${novas.length > 1 ? "s" : ""} lançada${novas.length > 1 ? "s" : ""} de hoje até ${diaMes(fim)}.`, "sucesso");
   agendarSincronizacao();
 }
 
@@ -372,16 +372,29 @@ async function lancarRotinaHoje(rotina) {
 
 /**
  * Atividade removida de uma rotina deixaria tarefa órfã no checklist, sem
- * nada que a explique. Aqui só as PENDENTES de hoje em diante são apagadas;
- * o que já foi concluído fica no histórico, porque aconteceu de verdade.
+ * nada que a explique. Duas situações, dois critérios:
+ * - rotina PAUSADA: sai tudo dela de hoje em diante, feito ou não — pausar
+ *   significa "para de valer a partir de agora", e o Felipe pediu que o
+ *   lançamento (não só o pendente) suma do dia em diante (2026-09-17).
+ * - rotina ainda ativa, mas atividade removida ou dia tirado da semana: só
+ *   o PENDENTE some; o que já foi concluído fica no histórico, porque
+ *   aconteceu de verdade.
  */
 async function limparOrfasDaRotina(rotina) {
   const vivos = new Set((rotina.atividades || []).map((a) => a.id));
-  const orfas = STATE.tarefas.filter((t) =>
-    t.rotinaId === rotina.id && t.estado === "pendente" && t.data >= STATE.hoje &&
-    (!rotina.ativa || !vivos.has(t.rotinaAtividadeId) || !(rotina.diasSemana || []).includes(diaSemanaISO(t.data)))
-  );
+  const daRotinaEmDiante = (t) => t.rotinaId === rotina.id && t.data >= STATE.hoje;
+
+  const orfas = !rotina.ativa
+    ? STATE.tarefas.filter(daRotinaEmDiante)
+    : STATE.tarefas.filter((t) => daRotinaEmDiante(t) && t.estado === "pendente" &&
+        (!vivos.has(t.rotinaAtividadeId) || !(rotina.diasSemana || []).includes(diaSemanaISO(t.data))));
+
   if (!orfas.length) return;
+  // a cobrança de atrasada é por tarefa; apagando o documento, ninguém mais
+  // vê esse id pra apagar o evento correspondente no Google Agenda
+  for (const t of orfas) {
+    if (t.agendaAtrasoId) await apagarEventosDe({ agendaAtrasoId: t.agendaAtrasoId });
+  }
   const batch = writeBatch(db);
   orfas.forEach((t) => batch.delete(doc(db, "tarefas", t.id)));
   await emSegundoPlano(batch.commit(), "Não foi possível limpar as tarefas antigas da rotina.");

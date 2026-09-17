@@ -244,6 +244,22 @@ Milhão, que moram na mesma origem.
 
 ---
 
+## Google Agenda sempre conectado, sem pedir pra reconectar
+
+O navegador guarda o token do Google Agenda só em memória (dura 1 hora), e a
+renovação automática silenciosa depende de cookie de terceiro que o
+Chrome/Edge vêm bloqueando por padrão — na prática, isso faz o app pedir
+"Conectar" de novo a cada sessão. Não dá pra resolver isso de vez só no
+navegador sem expor um segredo que nunca pode ir pra um site estático
+público.
+
+A correção de verdade está em [`apps-script/`](apps-script/): um Google
+Apps Script rodando na sua própria conta, com gatilho a cada 15 minutos,
+que sincroniza a agenda sozinho, com o app fechado. Uns 5 minutos pra
+instalar — passo a passo em [`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md).
+
+---
+
 ## Se você já tinha ligado antes de 2026-09-17
 
 **Republique as `firestore.rules`.** A correção do lançamento no Google Agenda
