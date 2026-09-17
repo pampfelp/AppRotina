@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>AppRotina</title>
+<meta name="description" content="Rotinas fixas, checklist do dia e o que ficou atrás." />
+
+<link rel="manifest" href="./manifest.json?v=1" />
+<meta name="theme-color" content="#0A0C0F" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Rotina" />
+<link rel="icon" href="./favicon.ico" />
+<link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+
+<!-- crença 7: todo asset local leva ?v=, bumpado a cada mudança relevante -->
+<link rel="stylesheet" href="./style.css?v=1" />
+</head>
+<body>
+
+<!-- ═══════════════════════ login ═══════════════════════ -->
+<div class="login" id="tela-login"></div>
+
+<!-- ═══════════════════════ app ═══════════════════════ -->
+<div class="app" id="app">
+
+  <header class="topbar">
+   <div class="topbar-interno">
+    <div class="titulo">
+      <small id="topbar-sub">Checklist</small>
+      <h1 id="topbar-titulo">Hoje</h1>
+    </div>
+    <div class="topbar-acoes" id="topbar-acoes">
+      <!-- o botão de três traços só aparece na aba de perfil -->
+      <button type="button" class="btn icone" id="btn-menu-perfil" aria-label="Abrir configurações" style="display:none;"><span class="ico"></span></button>
+    </div>
+   </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ─────────────── view: Hoje (checklist) ─────────────── -->
+    <section class="view" id="view-hoje">
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex; align-items:center; gap:16px;">
+          <div class="anel" id="anel-hoje"><span>0%</span></div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-family:var(--display); font-weight:700; font-size:15px;">Progresso de hoje</div>
+            <div class="progresso" style="margin-top:9px;">
+              <div class="progresso-trilha"><div class="progresso-fill" id="prog-hoje"></div></div>
+              <span class="progresso-num" id="prog-hoje-num">0/0</span>
+            </div>
+            <div class="hint" id="hint-atrasadas" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="valor num" id="kpi-hoje-total">0</div>
+          <div class="label">Tarefas de hoje</div>
+        </div>
+        <div class="kpi-card warn">
+          <div class="valor num" id="kpi-atrasadas">0</div>
+          <div class="label">Atrasadas</div>
+        </div>
+        <div class="kpi-card">
+          <div class="valor num" id="kpi-feitas-hoje">0</div>
+          <div class="label">Concluídas hoje</div>
+        </div>
+        <div class="kpi-card neutro">
+          <div class="valor num" id="kpi-sequencia">0</div>
+          <div class="label">Dias seguidos 100%</div>
+        </div>
+      </div>
+
+      <div id="lista-checklist"></div>
+      <div id="empty-checklist" class="empty-state" style="display:none;"></div>
+    </section>
+
+    <!-- ─────────────── view: Painel (dashboard) ─────────────── -->
+    <section class="view" id="view-painel">
+      <div class="seg" id="seg-periodo" style="margin-bottom:14px;">
+        <button type="button" data-dias="7">7 dias</button>
+        <button type="button" data-dias="30" class="on">30 dias</button>
+        <button type="button" data-dias="90">90 dias</button>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="valor num" id="kpi-p-lancadas">0</div>
+          <div class="label">Tarefas lançadas</div>
+        </div>
+        <div class="kpi-card">
+          <div class="valor num" id="kpi-p-concluidas">0</div>
+          <div class="label">Concluídas</div>
+        </div>
+        <div class="kpi-card info">
+          <div class="valor num" id="kpi-p-taxa">0<small>%</small></div>
+          <div class="label">Taxa de conclusão</div>
+        </div>
+        <div class="kpi-card neutro">
+          <div class="valor num" id="kpi-p-descartadas">0</div>
+          <div class="label">Descartadas</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-titulo">
+          <h3>Onde você se dedicou mais</h3>
+          <span class="hint">por conclusão</span>
+        </div>
+        <div class="rank-lista" id="rank-lista"></div>
+        <div id="rank-vazio" class="empty-state" style="display:none;"></div>
+      </div>
+
+      <!--
+        Histórico. Existe por causa da crença 32 e do gatilho A10: tarefa
+        concluída de dia passado sai do checklist, e o que não aparece em
+        tela nenhuma não dá pra ver, corrigir nem excluir. No
+        FinanceiroPamplona esse mesmo desenho gerou 12 registros invisíveis
+        de R$ 3.145 acumulados por semanas.
+      -->
+      <div class="card">
+        <div class="card-titulo">
+          <h3>Histórico</h3>
+          <span class="hint" id="hist-cont"></span>
+        </div>
+        <div class="aviso info" style="margin-bottom:12px;">
+          <span class="ico"></span>
+          <span>O que você concluiu ou descartou em dias passados sai do checklist mas continua aqui, e dá pra desfazer.</span>
+        </div>
+        <div class="field">
+          <label for="hist-filtro-cat">Categoria</label>
+          <select id="hist-filtro-cat"><option value="">Todas</option></select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Data</th><th>Tarefa</th><th>Categoria</th><th>Situação</th><th></th></tr>
+            </thead>
+            <tbody id="tbody-historico"></tbody>
+          </table>
+        </div>
+        <button type="button" class="btn bloco ghost" id="hist-mais" style="display:none; margin-top:10px;"></button>
+        <div id="hist-vazio" class="empty-state" style="display:none;"></div>
+      </div>
+    </section>
+
+    <!-- ─────────────── view: Rotinas ─────────────── -->
+    <section class="view" id="view-rotinas">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="valor num" id="kpi-r-ativas">0</div>
+          <div class="label">Rotinas ativas</div>
+        </div>
+        <div class="kpi-card info">
+          <div class="valor num" id="kpi-r-semana">0</div>
+          <div class="label">Tarefas por semana</div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin:16px 0 12px;">
+        <h3 style="font-size:15px;">Minhas rotinas fixas</h3>
+        <button class="btn primary" id="btn-nova-rotina">Nova rotina</button>
+      </div>
+
+      <div id="lista-rotinas"></div>
+      <div id="empty-rotinas" class="empty-state" style="display:none;"></div>
+    </section>
+
+    <!-- ─────────────── view: Perfil ─────────────── -->
+    <section class="view" id="view-perfil">
+      <div class="card">
+        <div class="perfil-topo">
+          <div class="avatar" id="perfil-avatar">?</div>
+          <div style="min-width:0;">
+            <div class="perfil-nome" id="perfil-nome">—</div>
+            <div class="perfil-email" id="perfil-email">—</div>
+          </div>
+        </div>
+        <button class="btn bloco" id="btn-editar-perfil">Editar meus dados</button>
+      </div>
+
+      <div class="card">
+        <div class="card-titulo"><h3>Dados cadastrais</h3></div>
+        <div id="perfil-dados"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-titulo"><h3>Sua constância</h3></div>
+        <div class="kpi-grid" style="margin:0;">
+          <div class="kpi-card">
+            <div class="valor num" id="kpi-u-total">0</div>
+            <div class="label">Concluídas no total</div>
+          </div>
+          <div class="kpi-card info">
+            <div class="valor num" id="kpi-u-dias">0</div>
+            <div class="label">Dias usando</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ═══════════════ pílula inferior (navegação principal) ═══════════════ -->
+  <nav class="pill-nav" aria-label="Navegação principal">
+    <button type="button" class="nav-item" data-view="hoje" aria-label="Hoje">
+      <span class="ico"></span><span class="badge" id="badge-hoje"></span>
+    </button>
+    <button type="button" class="nav-item" data-view="painel" aria-label="Painel">
+      <span class="ico"></span>
+    </button>
+    <button type="button" class="nav-add" id="btn-nova-tarefa" aria-label="Nova tarefa">
+      <span class="ico"></span>
+    </button>
+    <button type="button" class="nav-item" data-view="rotinas" aria-label="Rotinas">
+      <span class="ico"></span>
+    </button>
+    <button type="button" class="nav-item" data-view="perfil" aria-label="Perfil">
+      <span class="ico"></span>
+    </button>
+  </nav>
+
+  <!-- ═══════════ menu lateral de configurações (só na aba perfil) ═══════════ -->
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <aside class="drawer" id="drawer-config" aria-label="Configurações">
+    <div class="drawer-head">
+      <strong style="font-family:var(--display); font-size:16px;">Configurações</strong>
+      <button type="button" class="btn ghost icone" id="btn-fechar-drawer" aria-label="Fechar"><span class="ico"></span></button>
+    </div>
+    <div class="drawer-corpo">
+      <div class="drawer-sec">Organização</div>
+      <button type="button" class="drawer-item" id="cfg-categorias">
+        <span class="ico"></span>
+        <span>Categorias<small id="cfg-categorias-sub">—</small></span>
+      </button>
+      <div class="drawer-sec">Integrações</div>
+      <button type="button" class="drawer-item" id="cfg-agenda">
+        <span class="ico"></span>
+        <span>Google Agenda<small id="cfg-agenda-sub">—</small></span>
+      </button>
+      <div class="drawer-sec">Conta</div>
+      <button type="button" class="drawer-item" id="cfg-sobre">
+        <span class="ico"></span>
+        <span>Sobre o app<small id="cfg-sobre-sub">—</small></span>
+      </button>
+      <button type="button" class="drawer-item sair" id="cfg-sair">
+        <span class="ico"></span>
+        <span>Sair</span>
+      </button>
+    </div>
+  </aside>
+
+</div>
+
+<script type="module" src="./app.js?v=1"></script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () =>
+      navigator.serviceWorker.register("./service-worker.js?v=1", { updateViaCache: "none" })
+    );
+  }
+</script>
+</body>
+</html>
