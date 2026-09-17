@@ -295,6 +295,13 @@ persistente — o remédio nesse caso é fora do app: conferir se há navegaçã
 privada ativa, ou desativar a extensão de privacidade/bloqueio de cookies
 pra este site.
 
+**Republique de novo em 2026-09-18 (cor personalizável).** `config/perfil`
+ganhou o campo `corTema`. Mesma regra de sempre: aceito ausente, então
+nenhuma conta existente quebra — só quem quiser trocar a cor em **Perfil ›
+Cor do app** precisa das regras novas publicadas antes de a escolha
+persistir. Sem republicar, a cor troca na hora mas o Firestore recusa
+salvar, e ela volta ao verde no próximo F5 (o app avisa disso no toast).
+
 ---
 
 ## Checklist de "está tudo ligado?"

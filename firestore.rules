@@ -113,10 +113,17 @@ service cloud.firestore {
     match /config/perfil {
       allow read: if autorizado();
       allow create, update: if autorizado()
-        && request.resource.data.keys().hasOnly(['nome','telefone','nascimento','ocupacao'])
+        && request.resource.data.keys().hasOnly(['nome','telefone','nascimento','ocupacao','corTema'])
         && texto(request.resource.data.nome, 120)
         && texto(request.resource.data.telefone, 20)
-        && texto(request.resource.data.ocupacao, 80);
+        && texto(request.resource.data.ocupacao, 80)
+        // cor principal personalizável (2026-09-18): aceito ausente, senão
+        // conta criada antes dessa data seria recusada ao salvar qualquer
+        // outro dado do perfil — mesmo raciocínio do categoriaId da rotina.
+        && (!("corTema" in request.resource.data)
+            || request.resource.data.corTema in
+               ['verde','ciano','azul','indigo','roxo','rosa','vermelho','ambar'])
+        && (!("nascimento" in request.resource.data) || texto(request.resource.data.nascimento, 10));
       allow delete: if false;
     }
 

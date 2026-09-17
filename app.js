@@ -69,6 +69,67 @@ const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma ve
 const CORES_CAT = ["#02AD58", "#A867FF", "#C48001", "#0A9DD3", "#FF3457", "#0CA5A7"];
 const CATEGORIAS_INICIAIS = ["Trabalho", "Faculdade", "Religião", "Relacionamento"];
 
+/*
+  Cor principal do app, personalizável (2026-09-18, pedido dele). "Verde" é
+  literalmente a cor original de sempre (#2BE38A/#02AD58/#06251A), sem
+  recalcular nada — quem nunca mexe aqui não vê diferença nenhuma. As outras
+  sete foram geradas em OKLCH na mesma luminosidade (L=0,72) pra terem peso
+  visual parecido entre si — mesmo critério de "neon contra fundo escuro"
+  usado na paleta do ranking, só que aqui o alvo é UM bloco cheio de cor
+  (botão, glow), não uma linha fina de gráfico, então a luminosidade-alvo é
+  mais alta e o contraste foi conferido contra --panel (mín. 6.5:1, folga
+  grande acima do piso de 3:1 pra componente de UI) e contra o próprio ink
+  escuro que fica em cima (mín. 6.75:1, acima do piso de 4.5:1 de texto).
+
+  "Vermelho" fica perto do H do --debit (erro/descartar, #FF5C7A) — os dois
+  são vermelho-rosados porque não tem muito espaço no círculo de cor pra
+  variar isso sem deixar de parecer vermelho. Sabendo disso, quem escolher
+  Vermelho ou Rosa vai ver o botão "Salvar" (cor de marca) parecido com o
+  botão "Excluir" (--debit). Decisão dele, não escondida dele.
+*/
+const CORES_TEMA = [
+  { id: "verde",    nome: "Verde",    accent: "#2BE38A", deep: "#02AD58", ink: "#06251A" },
+  { id: "ciano",    nome: "Turquesa", accent: "#08BCBC", deep: "#068C8C", ink: "#001818" },
+  { id: "azul",     nome: "Azul",     accent: "#50A9FF", deep: "#017DD6", ink: "#00142B" },
+  { id: "indigo",   nome: "Índigo",   accent: "#8B9BFF", deep: "#5A5FFF", ink: "#0C0047" },
+  { id: "roxo",     nome: "Violeta",  accent: "#C082FF", deep: "#A516FF", ink: "#1F0036" },
+  { id: "rosa",     nome: "Rosa",     accent: "#FF56D3", deep: "#D000A7", ink: "#29001F" },
+  { id: "vermelho", nome: "Vermelho", accent: "#FF726B", deep: "#E40426", ink: "#2E0002" },
+  { id: "ambar",    nome: "Âmbar",    accent: "#E19000", deep: "#A86B06", ink: "#1F1000" },
+];
+const CHAVE_COR_TEMA = "rot_cor_tema";
+
+function hexParaRgb(hex) {
+  const n = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16)).join(",");
+}
+
+/**
+ * Escreve as cinco variáveis CSS que definem a cor principal (crença 6: o
+ * NOME do token é fixo, só o valor muda — isto só continua essa regra em
+ * runtime). Sem rede, sem Firestore: só CSS custom property no :root, que
+ * o resto da folha de estilo já lê em cascata.
+ */
+function aplicarCorTema(id) {
+  const cor = CORES_TEMA.find((c) => c.id === id) || CORES_TEMA[0];
+  const raiz = document.documentElement.style;
+  raiz.setProperty("--accent", cor.accent);
+  raiz.setProperty("--accent-deep", cor.deep);
+  raiz.setProperty("--accent-ink", cor.ink);
+  raiz.setProperty("--accent-rgb", hexParaRgb(cor.accent));
+  raiz.setProperty("--roxo", cor.accent);
+  return cor;
+}
+
+/*
+  Aplicada JÁ, antes de qualquer tela pintar (inclusive a de login), lendo
+  do cache local — a fonte de verdade é o Firestore (config/perfil.corTema),
+  mas esperar a rede pra pintar a cor certa piscaria verde e trocaria assim
+  que o documento chegasse. O onSnapshot de "perfil" reaplica com o valor
+  real assim que login e leitura terminam, e corrige o cache se divergir.
+*/
+aplicarCorTema(localStorage.getItem(CHAVE_COR_TEMA) || "verde");
+
 const STATE = {
   user: null,
   categorias: [],
@@ -209,6 +270,8 @@ function abrirEscutas() {
   registrarListener("perfil", () =>
     onSnapshot(doc(db, "config", "perfil"), (snap) => {
       STATE.perfil = snap.exists() ? snap.data() : {};
+      const cor = aplicarCorTema(STATE.perfil.corTema || "verde");
+      localStorage.setItem(CHAVE_COR_TEMA, cor.id); // cache pra pintar certo já na próxima abertura
       renderPerfil();
     }, erro)
   );
@@ -1407,6 +1470,37 @@ async function excluirRotina(id) {
 
 /* ─────────────────────────── perfil ─────────────────────────── */
 
+function renderCoresGrade() {
+  const alvo = $("cores-grade");
+  if (!alvo) return;
+  const atual = STATE.perfil.corTema || "verde";
+
+  alvo.innerHTML = CORES_TEMA.map((c) => `
+    <button type="button" class="cor-bola ${c.id === atual ? "on" : ""}"
+            style="background:${c.accent};" data-cor="${c.id}"
+            aria-label="${esc(c.nome)}" aria-pressed="${c.id === atual}" title="${esc(c.nome)}">
+      <span class="ico">${ICONS.check}</span>
+    </button>`).join("");
+
+  alvo.querySelectorAll("[data-cor]").forEach((b) =>
+    b.addEventListener("click", () => escolherCorTema(b.dataset.cor)));
+}
+
+async function escolherCorTema(id) {
+  if ((STATE.perfil.corTema || "verde") === id) return;
+
+  // otimista: pinta a cor na hora, o Firestore só confirma atrás (crença 11)
+  const cor = aplicarCorTema(id);
+  localStorage.setItem(CHAVE_COR_TEMA, cor.id);
+  STATE.perfil.corTema = id; // pra renderCoresGrade() já nascer com a bolinha certa marcada
+  renderCoresGrade();
+
+  await emSegundoPlano(
+    setDoc(doc(db, "config", "perfil"), { corTema: id }, { merge: true }),
+    "Não foi possível salvar a cor. Ela volta ao normal quando você reabrir o app."
+  );
+}
+
 function renderPerfil() {
   const u = STATE.user;
   if (!u) return;
@@ -1424,6 +1518,8 @@ function renderPerfil() {
 
   const provedores = (u.providerData || []).map((p) =>
     p.providerId === "google.com" ? "Google" : p.providerId === "password" ? "E-mail e senha" : p.providerId);
+
+  renderCoresGrade();
 
   $("perfil-dados").innerHTML = [
     ["Nome completo", STATE.perfil.nome],
