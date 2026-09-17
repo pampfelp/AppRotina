@@ -242,7 +242,10 @@ function tarefaDaAtividade(data, rotina, ativ) {
   return {
     data, hora: rotina.hora || "08:00",
     duracaoMin: Number(rotina.duracaoMin) || 30,
-    titulo: ativ.titulo,
+    // O título da tarefa é o nome da rotina, não da atividade: a atividade
+    // deixou de exigir um título próprio (só a categoria é obrigatória),
+    // então o que identifica a linha no checklist é sempre a rotina.
+    titulo: rotina.nome,
     categoriaId: ativ.categoriaId || "",
     estado: "pendente",
     origem: "rotina",
@@ -309,6 +312,48 @@ async function materializar() {
   if (novas.length) toast(`${novas.length} tarefa${novas.length > 1 ? "s" : ""} de rotina lançada${novas.length > 1 ? "s" : ""}.`, "info");
 }
 
+/**
+ * Ação explícita (botão em Rotinas fixas): lança de uma vez o que falta das
+ * rotinas ativas pros próximos `dias` dias, incluindo hoje. Diferente de
+ * materializar(), não mexe em `config/estado.ultimaMaterializacao` — aquele
+ * marcador é só da recuperação automática de dias passados perdidos.
+ */
+async function lancarProximosDias(dias) {
+  const inicio = STATE.hoje;
+  const fim = somarDiasISO(inicio, dias - 1);
+
+  const existentes = new Set();
+  try {
+    const qs = await getDocs(query(collection(db, "tarefas"),
+      where("data", ">=", inicio), where("data", "<=", fim)));
+    qs.forEach((d) => existentes.add(d.id));
+  } catch (err) { console.error(err); return toast("Não foi possível conferir o que já está lançado.", "erro"); }
+
+  const novas = [];
+  for (let dia = inicio; dia <= fim; dia = somarDiasISO(dia, 1)) {
+    const dow = diaSemanaISO(dia);
+    for (const r of STATE.rotinas) {
+      if (!r.ativa || !(r.diasSemana || []).includes(dow)) continue;
+      for (const a of r.atividades || []) {
+        const id = idTarefaRotina(dia, r.id, a.id);
+        if (existentes.has(id)) continue;
+        novas.push([id, tarefaDaAtividade(dia, r, a)]);
+      }
+    }
+  }
+
+  if (!novas.length) return toast("Já está tudo lançado pros próximos 7 dias.", "info");
+
+  for (let i = 0; i < novas.length; i += 450) {
+    const batch = writeBatch(db);
+    novas.slice(i, i + 450).forEach(([id, dados]) => batch.set(doc(db, "tarefas", id), dados));
+    const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar as rotinas dos próximos dias.");
+    if (!ok) return;
+  }
+  toast(`${novas.length} tarefa${novas.length > 1 ? "s" : ""} lançada${novas.length > 1 ? "s" : ""} pros próximos ${dias} dias.`, "sucesso");
+  agendarSincronizacao();
+}
+
 /** Lança hoje as atividades de uma rotina recém-salva, se hoje for dia dela. */
 async function lancarRotinaHoje(rotina) {
   const dow = diaSemanaISO(STATE.hoje);
@@ -366,6 +411,107 @@ function tagCategoria(id) {
   const nome = nomeCategoria(id);
   if (!nome) return `<span class="cat-tag" style="color:var(--ink-faint);">sem categoria</span>`;
   return `<span class="cat-tag"><span class="cat-ponto" style="background:${esc(corCategoria(id))}"></span>${esc(nome)}</span>`;
+}
+
+/** Nome de exibição de uma atividade de rotina, já que o próprio título dela
+    deixou de ser obrigatório (a categoria virou o que identifica a linha). */
+const rotuloAtividade = (a) => a.titulo || nomeCategoria(a.categoriaId) || "atividade";
+
+/* Cria uma categoria "on the fly", a partir do combobox de categoria. Ainda
+   assim ela nasce como um registro de verdade em `categorias/`, com id e cor
+   — nunca vira texto solto dentro de uma tarefa ou atividade, que é o que
+   evitaria "Igreja" e "igreja" virarem duas linhas no ranking. */
+async function criarCategoriaRapida(nomeDigitado) {
+  const nome = nomeDigitado.trim();
+  const existente = STATE.categorias.find((c) => c.nome.toLowerCase() === nome.toLowerCase());
+  if (existente) return existente;
+  const id = slugId(nome) || `c-${gerarId()}`;
+  const cat = { id, nome, cor: CORES_CAT[STATE.categorias.length % CORES_CAT.length], ordem: STATE.categorias.length, ativa: true };
+  // otimista: entra na lista local já, porque quem chamou precisa do id na
+  // hora pra selecionar a categoria recém-criada (crença 11)
+  STATE.categorias = [...STATE.categorias, cat].sort((a, b) => (a.ordem ?? 99) - (b.ordem ?? 99) || a.nome.localeCompare(b.nome, "pt-BR"));
+  await emSegundoPlano(
+    setDoc(doc(db, "categorias", id), { ...cat, createdAt: serverTimestamp() }, { merge: true }),
+    "Não foi possível criar a categoria."
+  );
+  return cat;
+}
+
+/*
+  Combobox digitável de categoria. Guarda o id de verdade num <input hidden>
+  (que carrega data-i/data-campo pra continuar entrando no mesmo fluxo de
+  sincronização de array que as outras linhas editáveis), e o texto visível
+  é só um filtro — nunca é ele que vira o valor salvo. Sem opção clicada (ou
+  sem "+ Cadastrar" clicado), o texto volta pro nome da categoria escolhida.
+*/
+function htmlComboCategoria({ dataI, dataCampo = "categoriaId", categoriaId, permitirVazio = false, placeholder = "Categoria…", inputId = "" }) {
+  return `
+    <div class="combo-cat" data-combo data-permitir-vazio="${permitirVazio ? "1" : "0"}">
+      <input type="text" ${inputId ? `id="${esc(inputId)}"` : ""} class="combo-input" autocomplete="off" placeholder="${esc(placeholder)}"
+             value="${esc(nomeCategoria(categoriaId))}" />
+      <input type="hidden" data-i="${dataI}" data-campo="${dataCampo}" class="combo-valor" value="${esc(categoriaId || "")}" />
+      <div class="combo-lista" hidden></div>
+    </div>`;
+}
+
+/** Liga o comportamento de todo combobox de categoria dentro de `raiz`. */
+function ligarCombosCategoria(raiz) {
+  raiz.querySelectorAll("[data-combo]").forEach((combo) => {
+    const input = combo.querySelector(".combo-input");
+    const valor = combo.querySelector(".combo-valor");
+    const lista = combo.querySelector(".combo-lista");
+    const permitirVazio = combo.dataset.permitirVazio === "1";
+
+    function selecionar(cat) {
+      valor.value = cat?.id || "";
+      input.value = cat?.nome || "";
+      valor.dispatchEvent(new Event("input", { bubbles: true }));
+      fechar();
+    }
+
+    function fechar() { lista.hidden = true; }
+
+    function abrir() {
+      const texto = input.value.trim().toLowerCase();
+      const opcoes = STATE.categorias.filter((c) => c.nome.toLowerCase().includes(texto));
+      const existeExata = STATE.categorias.some((c) => c.nome.toLowerCase() === texto);
+
+      const linhasOpcoes = opcoes.map((c) => `
+        <div class="combo-item ${c.id === valor.value ? "ativa" : ""}" data-id="${esc(c.id)}">
+          <span class="cat-ponto" style="background:${esc(c.cor)}"></span>${esc(c.nome)}
+        </div>`).join("");
+      const linhaVazia = permitirVazio ? `<div class="combo-item" data-id="">Sem categoria</div>` : "";
+      const linhaCriar = texto && !existeExata
+        ? `<div class="combo-item criar" data-criar="${esc(input.value.trim())}"><span class="ico">${ICONS.mais}</span> Cadastrar "${esc(input.value.trim())}"</div>`
+        : "";
+
+      lista.innerHTML = linhaVazia + linhasOpcoes + linhaCriar ||
+        `<div class="combo-item vazia">Nenhuma categoria encontrada.</div>`;
+      lista.hidden = false;
+
+      lista.querySelectorAll("[data-id]").forEach((el) =>
+        el.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          selecionar(el.dataset.id ? STATE.categorias.find((c) => c.id === el.dataset.id) : null);
+        }));
+      lista.querySelectorAll("[data-criar]").forEach((el) =>
+        el.addEventListener("mousedown", async (e) => {
+          e.preventDefault();
+          const cat = await criarCategoriaRapida(el.dataset.criar);
+          selecionar(cat);
+        }));
+    }
+
+    input.addEventListener("focus", abrir);
+    input.addEventListener("input", abrir);
+    input.addEventListener("blur", () => {
+      // dá tempo do mousedown da lista rodar antes de fechar e reverter
+      setTimeout(() => {
+        fechar();
+        input.value = nomeCategoria(valor.value);
+      }, 150);
+    });
+  });
 }
 
 /** Tarefas visíveis no checklist, na regra exata que o Felipe descreveu. */
@@ -622,14 +768,15 @@ async function excluirTarefa(id) {
   toast("Tarefa excluída.", "sucesso");
 }
 
-/* Modal de tarefa avulsa. Data e hora num campo só, já preenchido com o
-   momento atual na criação (design-system regra 11). */
+/* Modal de tarefa avulsa. Data e hora em campos separados (mais fácil de
+   mudar só um dos dois do que editar um datetime-local inteiro), já
+   preenchidos com o momento atual na criação (design-system regra 11). */
 function modalTarefa(tarefa) {
   const editando = !!tarefa;
   const agora = new Date();
-  const quando = editando
-    ? `${tarefa.data}T${tarefa.hora || "08:00"}`
-    : `${isoLocal(agora)}T${String(agora.getHours()).padStart(2, "0")}:${String(agora.getMinutes()).padStart(2, "0")}`;
+  const dataInicial = editando ? tarefa.data : isoLocal(agora);
+  const horaInicial = editando ? (tarefa.hora || "08:00")
+    : `${String(agora.getHours()).padStart(2, "0")}:${String(agora.getMinutes()).padStart(2, "0")}`;
 
   const corpo = abrirModal(
     editando ? "Editar tarefa" : "Nova tarefa",
@@ -639,26 +786,29 @@ function modalTarefa(tarefa) {
      </div>
      <div class="field field-2">
        <div>
-         <label for="t-quando">Quando <span class="obr">*</span></label>
-         <input id="t-quando" type="datetime-local" value="${esc(quando)}" />
+         <label for="t-data">Data <span class="obr">*</span></label>
+         <input id="t-data" type="date" value="${esc(dataInicial)}" />
        </div>
        <div>
-         <label for="t-dur">Duração (min)</label>
-         <input id="t-dur" type="number" min="5" max="600" step="5" value="${esc(String(tarefa?.duracaoMin || 30))}" />
+         <label for="t-hora">Hora <span class="obr">*</span></label>
+         <input id="t-hora" type="time" value="${esc(horaInicial)}" />
        </div>
      </div>
      <div class="field">
+       <label for="t-dur">Duração (min)</label>
+       <input id="t-dur" type="number" min="5" max="600" step="5" value="${esc(String(tarefa?.duracaoMin || 30))}" />
+       <div class="hint">É o tamanho do bloco que essa tarefa ocupa no Google Agenda.</div>
+     </div>
+     <div class="field">
        <label for="t-cat">Categoria</label>
-       <select id="t-cat">
-         <option value="">Sem categoria</option>
-         ${STATE.categorias.map((c) => `<option value="${esc(c.id)}" ${c.id === tarefa?.categoriaId ? "selected" : ""}>${esc(c.nome)}</option>`).join("")}
-       </select>
+       ${htmlComboCategoria({ dataI: 0, categoriaId: tarefa?.categoriaId || "", permitirVazio: true, placeholder: "Sem categoria", inputId: "t-cat" })}
        <div class="hint">A categoria é o que alimenta o ranking do Painel.</div>
      </div>`,
     `<span></span>
      <button type="button" class="btn" data-fechar-modal>Cancelar</button>
      <button type="button" class="btn primary" id="t-salvar">Salvar</button>`
   );
+  ligarCombosCategoria(corpo);
 
   corpo.querySelector("#t-titulo").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("t-salvar").click();
@@ -666,14 +816,14 @@ function modalTarefa(tarefa) {
 
   $("t-salvar").addEventListener("click", async () => {
     const titulo = corpo.querySelector("#t-titulo").value.trim();
-    const quandoVal = corpo.querySelector("#t-quando").value;
+    const data = corpo.querySelector("#t-data").value;
+    const hora = corpo.querySelector("#t-hora").value;
     const duracaoMin = Number(corpo.querySelector("#t-dur").value) || 30;
-    const categoriaId = corpo.querySelector("#t-cat").value;
+    const categoriaId = corpo.querySelector(".combo-valor").value;
     if (!titulo) return toast("Informe o que é a tarefa.", "erro");
-    if (!quandoVal) return toast("Informe quando.", "erro");
+    if (!data) return toast("Informe a data.", "erro");
+    if (!hora) return toast("Informe a hora.", "erro");
 
-    const [data, horaBruta] = quandoVal.split("T");
-    const hora = (horaBruta || "08:00").slice(0, 5);
     fecharModal();
 
     if (editando) {
@@ -874,7 +1024,15 @@ function renderRotinas() {
   }
   vazio.style.display = "none";
 
-  alvo.innerHTML = STATE.rotinas.map((r) => `
+  // organizada por dia da semana, domingo primeiro: cada rotina entra pelo
+  // menor dia em que ela cai, e dentro do mesmo dia segue por horário
+  const rotinasOrdenadas = [...STATE.rotinas].sort((a, b) => {
+    const diaA = Math.min(...(a.diasSemana?.length ? a.diasSemana : [7]));
+    const diaB = Math.min(...(b.diasSemana?.length ? b.diasSemana : [7]));
+    return diaA - diaB || horaEmMinutos(a.hora) - horaEmMinutos(b.hora) || String(a.nome).localeCompare(String(b.nome), "pt-BR");
+  });
+
+  alvo.innerHTML = rotinasOrdenadas.map((r) => `
     <div class="rotina ${r.ativa ? "" : "inativa"}">
       <div class="rotina-topo">
         <div style="flex:1; min-width:0;">
@@ -882,10 +1040,12 @@ function renderRotinas() {
           <div style="display:flex; align-items:center; gap:9px; margin-top:3px;">
             <span class="rotina-hora">${esc(r.hora || "--:--")}</span>
             <span class="cat-tag" style="color:var(--ink-faint);">${(r.atividades || []).length} atividade${(r.atividades || []).length === 1 ? "" : "s"}</span>
-            ${r.ativa ? "" : `<span class="pill neutro">pausada</span>`}
           </div>
         </div>
         <div class="tarefa-acoes">
+          <button type="button" class="pill ${r.ativa ? "credit" : "neutro"}" data-toggle-rotina="${esc(r.id)}"
+                  title="${r.ativa ? "Pausar: para de lançar no checklist" : "Reativar: volta a lançar no checklist"}"
+                  style="border:none; cursor:pointer;">${r.ativa ? "Ativa" : "Pausada"}</button>
           <button type="button" data-ver="${esc(r.id)}" aria-label="Ver"><span class="ico">${ICONS.info}</span></button>
           <button type="button" data-editar-rotina="${esc(r.id)}" aria-label="Editar"><span class="ico">${ICONS.lapis}</span></button>
           <button type="button" data-excluir-rotina="${esc(r.id)}" aria-label="Excluir"><span class="ico">${ICONS.excluir}</span></button>
@@ -899,12 +1059,14 @@ function renderRotinas() {
         ${(r.atividades || []).map((a) => `
           <div class="rotina-atividade">
             <span class="cat-ponto" style="background:${esc(corCategoria(a.categoriaId))}"></span>
-            <span class="txt">${esc(a.titulo)}</span>
+            <span class="txt">${esc(rotuloAtividade(a))}</span>
             <span style="color:var(--ink-faint); font-size:12px; flex-shrink:0;">${esc(nomeCategoria(a.categoriaId))}</span>
-          </div>`).join("")}
+          </div>`).join("") || `<div class="hint">Sem atividades — só o lembrete no Google Agenda.</div>`}
       </div>
     </div>`).join("");
 
+  alvo.querySelectorAll("[data-toggle-rotina]").forEach((b) =>
+    b.addEventListener("click", () => alternarRotinaAtiva(b.dataset.toggleRotina)));
   alvo.querySelectorAll("[data-ver]").forEach((b) =>
     b.addEventListener("click", () => modalVerRotina(b.dataset.ver)));
   alvo.querySelectorAll("[data-editar-rotina]").forEach((b) =>
@@ -938,9 +1100,9 @@ function modalVerRotina(id) {
          ${(r.atividades || []).map((a) => `
            <div class="rotina-atividade">
              <span class="cat-ponto" style="background:${esc(corCategoria(a.categoriaId))}"></span>
-             <span class="txt">${esc(a.titulo)}</span>
+             <span class="txt">${esc(rotuloAtividade(a))}</span>
              <span style="color:var(--ink-faint); font-size:12px;">${esc(nomeCategoria(a.categoriaId))}</span>
-           </div>`).join("") || `<div class="hint">Nenhuma atividade.</div>`}
+           </div>`).join("") || `<div class="hint">Nenhuma atividade — só o lembrete no Google Agenda.</div>`}
        </div>
      </div>`,
     `<span></span>
@@ -954,10 +1116,6 @@ function modalRotina(rotina) {
   const editando = !!rotina;
   const dias = new Set(rotina?.diasSemana ?? [1, 2, 3, 4, 5]);
   let atividades = (rotina?.atividades ?? [{ id: gerarId(), titulo: "", categoriaId: "" }]).map((a) => ({ ...a }));
-
-  if (!STATE.categorias.length) {
-    return toast("Crie uma categoria antes, em Perfil › Configurações › Categorias.", "erro", 7000);
-  }
 
   const corpo = abrirModal(
     editando ? "Editar rotina" : "Nova rotina",
@@ -985,7 +1143,8 @@ function modalRotina(rotina) {
        <div class="hint">Segunda a sexta já vem marcado.</div>
      </div>
      <div class="field">
-       <label>Atividades desta rotina <span class="obr">*</span></label>
+       <label>Atividades desta rotina</label>
+       <div class="hint" style="margin:0 0 8px;">Opcional. Se adicionar uma, ela precisa de categoria — o título é livre.</div>
        <div id="r-ativs"></div>
        <button type="button" class="btn bloco" id="r-add-ativ" style="margin-top:4px;">
          <span class="ico">${ICONS.mais}</span> Adicionar atividade
@@ -1013,15 +1172,13 @@ function modalRotina(rotina) {
     alvoAtivs.innerHTML = atividades.map((a, i) => `
       <div class="ativ-edit">
         <input type="text" maxlength="160" data-i="${i}" data-campo="titulo"
-               value="${esc(a.titulo)}" placeholder="Ex.: orar e ler" />
-        <select data-i="${i}" data-campo="categoriaId">
-          <option value="">Categoria…</option>
-          ${STATE.categorias.map((c) => `<option value="${esc(c.id)}" ${c.id === a.categoriaId ? "selected" : ""}>${esc(c.nome)}</option>`).join("")}
-        </select>
-        ${atividades.length > 1 ? `<button type="button" data-remover="${i}" aria-label="Remover"><span class="ico">${ICONS.excluir}</span></button>` : ""}
-      </div>`).join("");
+               value="${esc(a.titulo)}" placeholder="Título (opcional)" />
+        ${htmlComboCategoria({ dataI: i, categoriaId: a.categoriaId })}
+        <button type="button" data-remover="${i}" aria-label="Remover"><span class="ico">${ICONS.excluir}</span></button>
+      </div>`).join("") || `<div class="hint">Nenhuma atividade — a rotina vira só um lembrete no Google Agenda.</div>`;
 
-    alvoAtivs.querySelectorAll("input,select").forEach((el) => {
+    ligarCombosCategoria(alvoAtivs);
+    alvoAtivs.querySelectorAll("[data-campo]").forEach((el) => {
       el.addEventListener("input", () => { atividades[Number(el.dataset.i)][el.dataset.campo] = el.value; });
     });
     alvoAtivs.querySelectorAll("[data-remover]").forEach((b) => {
@@ -1051,14 +1208,18 @@ function modalRotina(rotina) {
     const hora = corpo.querySelector("#r-hora").value;
     const duracaoMin = Number(corpo.querySelector("#r-dur").value) || 30;
     const ativa = editando ? corpo.querySelector("#r-ativa").value === "1" : true;
-    const limpas = atividades
+    // uma linha só conta como atividade de verdade se tiver título ou
+    // categoria escolhida; uma linha totalmente vazia é descartada em
+    // silêncio (é só o que sobra de "adicionar" e não preencher)
+    const tocadas = atividades
       .map((a) => ({ id: a.id || gerarId(), titulo: String(a.titulo || "").trim(), categoriaId: a.categoriaId || "" }))
-      .filter((a) => a.titulo);
+      .filter((a) => a.titulo || a.categoriaId);
 
     if (!nome) return toast("Informe o nome da rotina.", "erro");
     if (!hora) return toast("Informe o horário.", "erro");
     if (!dias.size) return toast("Marque pelo menos um dia da semana.", "erro");
-    if (!limpas.length) return toast("Informe pelo menos uma atividade.", "erro");
+    if (tocadas.some((a) => !a.categoriaId)) return toast("Toda atividade precisa de uma categoria.", "erro");
+    const limpas = tocadas;
 
     const id = rotina?.id || `r-${gerarId()}`;
     const dados = {
@@ -1081,6 +1242,20 @@ function modalRotina(rotina) {
     await lancarRotinaHoje(salva);
     agendarSincronizacao();
   });
+}
+
+/** Pausar/reativar direto na lista, sem abrir o formulário inteiro. */
+async function alternarRotinaAtiva(id) {
+  const r = STATE.rotinas.find((x) => x.id === id);
+  if (!r) return;
+  const ativa = !r.ativa;
+  const atualizada = { ...r, ativa };
+  const ok = await emSegundoPlano(updateDoc(doc(db, "rotinas", id), { ativa }), "Não foi possível atualizar a rotina.");
+  if (!ok) return;
+  await limparOrfasDaRotina(atualizada);
+  await lancarRotinaHoje(atualizada);
+  toast(ativa ? "Rotina ativada." : "Rotina pausada. Ela para de lançar no checklist.", "sucesso");
+  agendarSincronizacao();
 }
 
 async function excluirRotina(id) {
@@ -1420,6 +1595,7 @@ function modalSobre() {
 function ligarEventos() {
   $("btn-nova-tarefa").addEventListener("click", () => modalTarefa());
   $("btn-nova-rotina").addEventListener("click", () => modalRotina());
+  $("btn-lancar-semana").addEventListener("click", () => lancarProximosDias(7));
   $("btn-editar-perfil").addEventListener("click", modalPerfil);
 
   $("btn-menu-perfil").addEventListener("click", abrirDrawer);

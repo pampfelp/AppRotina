@@ -226,7 +226,18 @@ function eventoDaRotina(rotina, nomeCategoria) {
   const dias = [...(rotina.diasSemana || [])].sort();
   const inicio = primeiraOcorrencia(dias);
   const dur = Number(rotina.duracaoMin) || 30;
-  const lista = (rotina.atividades || []).map((a) => `• ${a.titulo}${nomeCategoria(a.categoriaId) ? ` (${nomeCategoria(a.categoriaId)})` : ""}`);
+  /*
+    O título da atividade virou opcional (só a categoria é obrigatória), então
+    uma atividade sem título geraria uma linha "• " vazia na descrição do
+    evento. Quando falta o título, a categoria é o que descreve a linha.
+  */
+  const lista = (rotina.atividades || [])
+    .map((a) => {
+      const cat = nomeCategoria(a.categoriaId);
+      if (a.titulo && cat) return `• ${a.titulo} (${cat})`;
+      return a.titulo || cat ? `• ${a.titulo || cat}` : "";
+    })
+    .filter(Boolean);
   return {
     summary: rotina.nome,
     description: [lista.join("\n"), "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
