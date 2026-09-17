@@ -162,9 +162,12 @@
         </div>
       </div>
 
-      <div style="display:flex; justify-content:space-between; align-items:center; margin:16px 0 12px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin:16px 0 12px; gap:8px; flex-wrap:wrap;">
         <h3 style="font-size:15px;">Minhas rotinas fixas</h3>
-        <button class="btn primary" id="btn-nova-rotina">Nova rotina</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="btn-lancar-semana" title="Lança no checklist o que falta dos próximos 7 dias">Lançar próximos 7 dias</button>
+          <button class="btn primary" id="btn-nova-rotina">Nova rotina</button>
+        </div>
       </div>
 
       <div id="lista-rotinas"></div>
