@@ -281,6 +281,7 @@ main.content{
   padding:5px; border-radius:8px;
 }
 .tarefa-acoes button:hover{ background:var(--panel-3); color:var(--ink); }
+.tarefa-acoes button:disabled{ opacity:.35; cursor:not-allowed; background:none; }
 .tarefa-acoes .ico{ width:15px; height:15px; }
 
 .cat-tag{

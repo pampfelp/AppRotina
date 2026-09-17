@@ -244,6 +244,23 @@ async function semearCategorias() {
 
 const idTarefaRotina = (data, rotinaId, atividadeId) => `${data}__${rotinaId}__${atividadeId}`;
 
+/** Primeira data, a partir de AMANHÃ, cujo dia da semana está em `dias`.
+    Usado só quando hoje não é dia da rotina — se fosse, a data é hoje. */
+function proximaOcorrenciaISO(dias, base) {
+  for (let i = 1; i <= 7; i++) {
+    const cand = somarDiasISO(base, i);
+    if (dias.includes(diaSemanaISO(cand))) return cand;
+  }
+  return base; // nunca deveria chegar aqui — modalRotina exige >=1 dia marcado
+}
+
+/** "hoje", "amanhã", ou "quarta (24/09)" — pro toast do lançamento manual. */
+function rotuloDataCurta(iso) {
+  const rot = rotuloDia(iso, STATE.hoje);
+  if (rot) return rot.toLowerCase();
+  return `${nomeDiaSemana(diaSemanaISO(iso)).replace("-feira", "")} (${diaMes(iso)})`;
+}
+
 function tarefaDaAtividade(data, rotina, ativ) {
   return {
     data, hora: rotina.hora || "08:00",
@@ -374,6 +391,51 @@ async function lancarRotinaHoje(rotina) {
     n++;
   }
   if (n) await emSegundoPlano(batch.commit(), "Não foi possível lançar a rotina de hoje.");
+}
+
+/*
+  Lançamento manual de UMA rotina, pedido pelo Felipe em 2026-09-18: um
+  botão na linha da rotina que lança a atividade dela agora, escolhendo a
+  data certa sozinho.
+
+  Regra exata que ele descreveu: se hoje for dia da rotina, lança hoje; se
+  hoje não for, lança na próxima ocorrência (não força hoje fora do dia
+  certo). Se já existir tarefa daquela rotina naquela data — em QUALQUER
+  estado, inclusive já concluída ou descartada — avisa que já existe, em
+  vez de recriar. Recriar por cima apagaria uma marcação real (crença 9);
+  "já existe" e "eu descartei de propósito" são coisas diferentes, e este
+  botão não pode confundir as duas.
+*/
+async function lancarAtividadeAgora(rotina) {
+  const dias = [...(rotina.diasSemana || [])].sort((a, b) => a - b);
+  if (!dias.length) return toast("Essa rotina não tem dia da semana marcado.", "erro");
+
+  const dow = diaSemanaISO(STATE.hoje);
+  const alvo = dias.includes(dow) ? STATE.hoje : proximaOcorrenciaISO(dias, STATE.hoje);
+
+  const atividades = atividadesEfetivas(rotina);
+  const existentes = new Set(
+    STATE.tarefas
+      .filter((t) => t.data === alvo && t.rotinaId === rotina.id)
+      .map((t) => t.rotinaAtividadeId)
+  );
+  const faltando = atividades.filter((a) => !existentes.has(a.id));
+  const quando = rotuloDataCurta(alvo);
+
+  if (!faltando.length) {
+    return toast(`Já existe: "${rotina.nome}" já está lançada em ${quando}.`, "info");
+  }
+
+  const batch = writeBatch(db);
+  faltando.forEach((a) =>
+    batch.set(doc(db, "tarefas", idTarefaRotina(alvo, rotina.id, a.id)), tarefaDaAtividade(alvo, rotina, a))
+  );
+  const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar a atividade.");
+  if (!ok) return;
+
+  const parcial = existentes.size > 0;
+  toast(`"${rotina.nome}" lançada em ${quando}${parcial ? " (o resto já existia)" : ""}.`, "sucesso");
+  agendarSincronizacao();
 }
 
 /**
@@ -1077,6 +1139,9 @@ function renderRotinas() {
           <button type="button" class="pill ${r.ativa ? "credit" : "neutro"}" data-toggle-rotina="${esc(r.id)}"
                   title="${r.ativa ? "Pausar: para de lançar no checklist" : "Reativar: volta a lançar no checklist"}"
                   style="border:none; cursor:pointer;">${r.ativa ? "Ativa" : "Pausada"}</button>
+          <button type="button" data-lancar-rotina="${esc(r.id)}" aria-label="Lançar atividade agora"
+                  title="${r.ativa ? "Lança hoje se hoje for dia dela, senão na próxima ocorrência" : "Rotina pausada — reative pra lançar"}"
+                  ${r.ativa ? "" : "disabled"}><span class="ico">${ICONS.lancar}</span></button>
           <button type="button" data-ver="${esc(r.id)}" aria-label="Ver"><span class="ico">${ICONS.info}</span></button>
           <button type="button" data-editar-rotina="${esc(r.id)}" aria-label="Editar"><span class="ico">${ICONS.lapis}</span></button>
           <button type="button" data-excluir-rotina="${esc(r.id)}" aria-label="Excluir"><span class="ico">${ICONS.excluir}</span></button>
@@ -1098,6 +1163,8 @@ function renderRotinas() {
 
   alvo.querySelectorAll("[data-toggle-rotina]").forEach((b) =>
     b.addEventListener("click", () => alternarRotinaAtiva(b.dataset.toggleRotina)));
+  alvo.querySelectorAll("[data-lancar-rotina]").forEach((b) =>
+    b.addEventListener("click", () => lancarAtividadeAgora(STATE.rotinas.find((r) => r.id === b.dataset.lancarRotina))));
   alvo.querySelectorAll("[data-ver]").forEach((b) =>
     b.addEventListener("click", () => modalVerRotina(b.dataset.ver)));
   alvo.querySelectorAll("[data-editar-rotina]").forEach((b) =>
