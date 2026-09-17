@@ -54,6 +54,7 @@ import {
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
   diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
 } from "./agenda.js";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
@@ -1703,11 +1704,36 @@ async function modalOrfaos() {
 }
 
 function modalSobre() {
+  /*
+    A linha "Sessão salva em" existe por causa de um relato real (2026-09-17):
+    o Felipe reportou que o F5 pedia login de novo, no celular e no
+    notebook. Sem visibilidade nenhuma sobre qual mecanismo de persistência
+    o navegador aceitou, o único jeito de investigar seria adivinhar. Agora
+    fica registrado aqui: "IndexedDB" é o normal e sobrevive fechar o
+    navegador; "localStorage" e "somente esta aba" são os degraus de
+    fallback, e "somente esta aba" quer dizer que o navegador (ou uma
+    extensão) está bloqueando armazenamento persistente — nesse caso um F5
+    comum não desloga, mas fechar a aba desloga.
+  */
+  const persistencia = {
+    indexedDB: "IndexedDB (sobrevive fechar o navegador)",
+    localStorage: "localStorage (sobrevive fechar o navegador)",
+    sessao: "somente esta aba (o navegador está bloqueando armazenamento persistente)",
+  }[DIAGNOSTICO_SESSAO.persistenciaAlvo] || DIAGNOSTICO_SESSAO.persistenciaAlvo;
+
   abrirModal("Sobre o AppRotina",
     `<div class="dado-linha"><span class="rot">Versão</span><span class="val num">1</span></div>
      <div class="dado-linha"><span class="rot">Janela do histórico</span><span class="val num">${DIAS_JANELA} dias</span></div>
      <div class="dado-linha"><span class="rot">Recuperação de lançamento</span><span class="val num">${MAX_RECUPERACAO} dias</span></div>
      <div class="dado-linha"><span class="rot">Último lançamento</span><span class="val num">${esc(STATE.hoje)}</span></div>
+     <div class="dado-linha"><span class="rot">Sessão salva em</span><span class="val">${esc(persistencia)}</span></div>
+     ${DIAGNOSTICO_SESSAO.persistenciaAlvo === "sessao" ? `
+     <div class="aviso" style="margin-top:8px;">
+       <span class="ico">${ICONS.alerta}</span>
+       <span>Este navegador não está guardando sua sessão de forma persistente.
+       Confira se há navegação privada, ou uma extensão bloqueando cookies/
+       armazenamento de terceiros, ativa.</span>
+     </div>` : ""}
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
        <span>O painel e o histórico olham no máximo ${DIAS_JANELA} dias pra trás,

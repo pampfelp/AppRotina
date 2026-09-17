@@ -272,12 +272,28 @@ a ser recusada** com `permission-denied`.
 apagar o conteúdo → colar o `firestore.rules` deste repositório → Publicar.
 
 **Republique de novo em 2026-09-18.** Rotina ganhou uma categoria própria
-obrigatória (`categoriaId`) — é ela que a rotina usa quando não tem nenhuma
-atividade cadastrada, porque nesse caso a rotina é a própria atividade. As
-regras agora exigem esse campo. **Rotina criada antes disso não tem esse
-campo gravado**, e qualquer gravação nela (inclusive só pausar/reativar pelo
-botão rápido) vai ser recusada até você abrir essa rotina, escolher uma
-categoria e salvar uma vez.
+(`categoriaId`) — é ela que a rotina usa quando não tem nenhuma atividade
+cadastrada, porque nesse caso a rotina é a própria atividade.
+
+O campo é **aceito ausente** nas regras, de propósito: exigir ele quebraria
+toda rotina criada antes dessa data. Rotina antiga continua sendo gravada,
+pausada e reativada normalmente sem o campo; ela só não entra no ranking do
+Painel por categoria até você abrir, escolher uma e salvar uma vez — nada
+urgente, é cosmético.
+
+**Republique de novo em 2026-09-17 (a correção do login).** O login mudou
+de `getAuth()` simples para `initializeAuth()` com uma cadeia de
+persistência explícita (IndexedDB → localStorage → sessão), pra corrigir o
+F5 pedindo pra escolher a conta do Google de novo. Isso é só código, sem
+campo novo — **não precisa republicar as regras por causa dessa parte**,
+só as duas acima se ainda não tiver feito.
+
+Se depois de atualizar o F5 ainda pedir login: abra **Perfil › ☰ ›
+Sobre o app** e veja a linha "Sessão salva em". Se disser "somente esta
+aba", o navegador (ou uma extensão) está bloqueando armazenamento
+persistente — o remédio nesse caso é fora do app: conferir se há navegação
+privada ativa, ou desativar a extensão de privacidade/bloqueio de cookies
+pra este site.
 
 ---
 
