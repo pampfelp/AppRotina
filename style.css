@@ -289,6 +289,11 @@ main.content{
 }
 .cat-ponto{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
+/* marcador de "está no Google Agenda" na linha da tarefa */
+.cat-tag.ag .ico{ width:13px; height:13px; }
+.cat-tag.ag.on{ color:var(--accent); }
+.cat-tag.ag.off{ color:var(--ink-faint); opacity:.45; }
+
 .pill{ display:inline-block; padding:2px 9px; border-radius:99px; font-size:11.5px; font-weight:600; border:1px solid transparent; }
 .pill.credit{ background:var(--credit-soft); color:var(--credit); border-color:rgba(43,227,138,.26); }
 .pill.debit{ background:var(--debit-soft); color:var(--debit); border-color:rgba(255,92,122,.26); }

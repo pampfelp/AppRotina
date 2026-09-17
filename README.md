@@ -41,9 +41,24 @@ como feita, e aí o ranking passaria a mentir.
 
 - Rotina ativa vira **um evento recorrente semanal**. Criado uma vez, notifica
   pra sempre, mesmo com o app fechado.
-- Atrasada não concluída vira **uma série diária de 14 dias** no horário
+- Tarefa avulsa de hoje em diante vira **um evento no horário dela**, com a
+  duração que você escolher. Tarefa vinda de rotina não ganha evento próprio,
+  porque o recorrente acima já cobre o horário dela.
+- Atrasada ainda pendente vira **uma série diária de 14 dias** no horário
   original em que ela deveria ter sido feita. A cobrança para quando você
   concluir ou descartar.
+
+**O que é apagado e o que não é.** O evento de um compromisso é registro do
+que aconteceu, então concluir a tarefa **não** apaga (sua agenda é lida por
+outras pessoas, e apagar reunião passada é destrutivo). A série de cobrança de
+uma atrasada é cobrança, então concluir ou descartar apaga. Descartar apaga os
+dois, porque descartar significa que o compromisso deixou de existir.
+
+**Como saber se está tudo lá.** Cada linha do checklist leva um ícone de
+agenda: verde quando o item está no Google Agenda, apagado quando não está. E
+em **Perfil › Configurações › Google Agenda** tem a contagem por tipo
+(rotinas, avulsas, atrasadas), a hora da última sincronização e o último erro
+que a API devolveu, se houver.
 
 **O furo conhecido.** Uma tarefa que vence num dia em que você nunca abre o
 app só ganha a série de cobrança quando você abrir. As rotinas continuam
@@ -226,6 +241,19 @@ O ícone é um visto verde neon em fundo grafite, diferente dos outros apps, de
 propósito (`pwa-checklist.md` regra 4). O escopo do manifest é a pasta
 `/AppRotina/`, então ele não briga com o SolarGreen-ERP nem com a Jornada do
 Milhão, que moram na mesma origem.
+
+---
+
+## Se você já tinha ligado antes de 2026-09-17
+
+**Republique as `firestore.rules`.** A correção do lançamento no Google Agenda
+acrescentou três campos nas tarefas (`duracaoMin`, `agendaEventoId`,
+`agendaHash`), e as regras validam a lista exata de campos permitidos com
+`hasOnly()`. Com as regras antigas publicadas, **toda gravação de tarefa passa
+a ser recusada** com `permission-denied`.
+
+É o passo 4 de novo: console do Firebase → Firestore Database → aba Regras →
+apagar o conteúdo → colar o `firestore.rules` deste repositório → Publicar.
 
 ---
 

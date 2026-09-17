@@ -11,10 +11,12 @@
   rotinas/{id}      { nome, hora, duracaoMin, diasSemana:[0..6], ativa,
                       atividades:[{ id, titulo, categoriaId }],
                       agendaEventoId, agendaHash, createdAt }
-  tarefas/{id}      { data:"YYYY-MM-DD", hora:"HH:MM", titulo, categoriaId,
+  tarefas/{id}      { data:"YYYY-MM-DD", hora:"HH:MM", duracaoMin, titulo,
+                      categoriaId,
                       estado:"pendente"|"concluida"|"descartada",
                       origem:"rotina"|"manual", rotinaId, rotinaAtividadeId,
                       concluidaEm, descartadaEm,
+                      agendaEventoId, agendaHash,
                       agendaAtrasoId, agendaAtrasoAte, createdAt }
   config/perfil     { nome, telefone, nascimento, ocupacao }
   config/estado     { ultimaMaterializacao:"YYYY-MM-DD" }
@@ -45,6 +47,7 @@ import { montarTelaLogin, observarSessao, sair } from "./auth.js";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
+  diagnosticoAgenda,
 } from "./agenda.js";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
@@ -238,6 +241,7 @@ const idTarefaRotina = (data, rotinaId, atividadeId) => `${data}__${rotinaId}__$
 function tarefaDaAtividade(data, rotina, ativ) {
   return {
     data, hora: rotina.hora || "08:00",
+    duracaoMin: Number(rotina.duracaoMin) || 30,
     titulo: ativ.titulo,
     categoriaId: ativ.categoriaId || "",
     estado: "pendente",
@@ -246,6 +250,7 @@ function tarefaDaAtividade(data, rotina, ativ) {
     rotinaAtividadeId: ativ.id,
     rotinaNome: rotina.nome,
     concluidaEm: null, descartadaEm: null,
+    agendaEventoId: null, agendaHash: null,
     agendaAtrasoId: null, agendaAtrasoAte: null,
     createdAt: serverTimestamp(),
   };
@@ -494,6 +499,21 @@ function renderChecklist() {
 function linhaTarefa(t) {
   const feita = t.estado === "concluida";
   const manual = t.origem === "manual";
+  /*
+    Marcador de agenda. Antes disso não havia como saber se um item tinha
+    chegado no Google Agenda sem abrir o Google Agenda e comparar na mão, que
+    é exatamente como o Felipe descobriu que as avulsas não estavam indo
+    (2026-09-17). Regra invisível é indistinguível de bug (crença 32).
+  */
+  const naAgenda = manual
+    ? !!t.agendaEventoId
+    : !!STATE.rotinas.find((r) => r.id === t.rotinaId)?.agendaEventoId;
+  const cobrando = !!t.agendaAtrasoId;
+  const marcaAgenda = cobrando
+    ? `<span class="cat-tag ag on" title="Cobrando todo dia no Google Agenda"><span class="ico">${ICONS.agenda}</span></span>`
+    : naAgenda
+      ? `<span class="cat-tag ag on" title="No Google Agenda"><span class="ico">${ICONS.agenda}</span></span>`
+      : `<span class="cat-tag ag off" title="Ainda não está no Google Agenda"><span class="ico">${ICONS.agenda}</span></span>`;
   return `
     <div class="tarefa ${feita ? "feita" : ""}">
       <button type="button" class="tarefa-check ${feita ? "on" : ""}" data-toggle="${esc(t.id)}"
@@ -507,6 +527,7 @@ function linhaTarefa(t) {
           ${tagCategoria(t.categoriaId)}
           ${manual ? `<span class="pill neutro">avulsa</span>`
                    : `<span class="cat-tag" style="color:var(--ink-faint);">${esc(t.rotinaNome || "rotina")}</span>`}
+          ${marcaAgenda}
         </div>
       </div>
       <div class="tarefa-acoes">
@@ -596,7 +617,7 @@ async function excluirTarefa(id) {
   if (!t) return;
   const ok = await confirmar(`Excluir "${t.titulo}" de vez? Isso não dá pra desfazer.`);
   if (!ok) return;
-  await apagarEventosDe({ agendaAtrasoId: t.agendaAtrasoId });
+  await apagarEventosDe({ agendaEventoId: t.agendaEventoId, agendaAtrasoId: t.agendaAtrasoId });
   await emSegundoPlano(deleteDoc(doc(db, "tarefas", id)), "Não foi possível excluir.");
   toast("Tarefa excluída.", "sucesso");
 }
@@ -616,9 +637,15 @@ function modalTarefa(tarefa) {
        <label for="t-titulo">O que é <span class="obr">*</span></label>
        <input id="t-titulo" type="text" maxlength="160" value="${esc(tarefa?.titulo || "")}" placeholder="Ex.: levar o contrato assinado" />
      </div>
-     <div class="field">
-       <label for="t-quando">Quando <span class="obr">*</span></label>
-       <input id="t-quando" type="datetime-local" value="${esc(quando)}" />
+     <div class="field field-2">
+       <div>
+         <label for="t-quando">Quando <span class="obr">*</span></label>
+         <input id="t-quando" type="datetime-local" value="${esc(quando)}" />
+       </div>
+       <div>
+         <label for="t-dur">Duração (min)</label>
+         <input id="t-dur" type="number" min="5" max="600" step="5" value="${esc(String(tarefa?.duracaoMin || 30))}" />
+       </div>
      </div>
      <div class="field">
        <label for="t-cat">Categoria</label>
@@ -640,6 +667,7 @@ function modalTarefa(tarefa) {
   $("t-salvar").addEventListener("click", async () => {
     const titulo = corpo.querySelector("#t-titulo").value.trim();
     const quandoVal = corpo.querySelector("#t-quando").value;
+    const duracaoMin = Number(corpo.querySelector("#t-dur").value) || 30;
     const categoriaId = corpo.querySelector("#t-cat").value;
     if (!titulo) return toast("Informe o que é a tarefa.", "erro");
     if (!quandoVal) return toast("Informe quando.", "erro");
@@ -650,23 +678,24 @@ function modalTarefa(tarefa) {
 
     if (editando) {
       await emSegundoPlano(
-        updateDoc(doc(db, "tarefas", tarefa.id), { titulo, data, hora, categoriaId }),
+        updateDoc(doc(db, "tarefas", tarefa.id), { titulo, data, hora, duracaoMin, categoriaId }),
         "Não foi possível salvar a tarefa."
       );
       toast("Tarefa atualizada.", "sucesso");
     } else {
       await emSegundoPlano(
         setDoc(doc(db, "tarefas", `m-${gerarId()}`), {
-          data, hora, titulo, categoriaId,
+          data, hora, duracaoMin, titulo, categoriaId,
           estado: "pendente", origem: "manual",
           rotinaId: null, rotinaAtividadeId: null, rotinaNome: null,
           concluidaEm: null, descartadaEm: null,
+          agendaEventoId: null, agendaHash: null,
           agendaAtrasoId: null, agendaAtrasoAte: null,
           createdAt: serverTimestamp(),
         }),
         "Não foi possível salvar a tarefa."
       );
-      toast("Tarefa adicionada.", "sucesso");
+      toast("Tarefa adicionada. Indo pro Google Agenda.", "sucesso");
       if (data > STATE.hoje) toast("Ela é de um dia futuro e aparece mais abaixo no checklist.", "info", 6000);
     }
     agendarSincronizacao();
@@ -1173,10 +1202,17 @@ function fecharDrawer() {
 function atualizarLinhaAgenda() {
   const sub = $("cfg-agenda-sub");
   if (!sub) return;
+  const ativas = STATE.rotinas.filter((r) => r.ativa);
+  const avulsas = STATE.tarefas.filter((t) => t.origem === "manual" && t.estado !== "descartada" && t.data >= STATE.hoje);
+  const atrasadas = STATE.tarefas.filter((t) => t.estado === "pendente" && t.data < STATE.hoje);
+  const faltando = ativas.filter((r) => !r.agendaEventoId).length
+    + avulsas.filter((t) => !t.agendaEventoId).length
+    + atrasadas.filter((t) => !t.agendaAtrasoId).length;
+
   if (!agendaConfigurada()) sub.textContent = "falta o ID do cliente OAuth";
-  else if (agendaConectada()) sub.textContent = "conectado";
-  else if (agendaJaAutorizada()) sub.textContent = "autorizado, reconectando quando precisar";
-  else sub.textContent = "não conectado";
+  else if (!agendaConectada() && !agendaJaAutorizada()) sub.textContent = "não conectado, nada é lançado";
+  else if (faltando) sub.textContent = `${faltando} item(ns) fora da agenda`;
+  else sub.textContent = "tudo sincronizado";
 
   const cats = $("cfg-categorias-sub");
   if (cats) cats.textContent = `${STATE.categorias.length} cadastrada${STATE.categorias.length === 1 ? "" : "s"}`;
@@ -1274,27 +1310,75 @@ function nomeCor(hex) {
 }
 
 function modalAgenda() {
-  const conectada = agendaConectada() || agendaJaAutorizada();
-  const rotComEvento = STATE.rotinas.filter((r) => r.agendaEventoId).length;
-  const cobrancas = STATE.tarefas.filter((t) => t.agendaAtrasoId).length;
+  const d = diagnosticoAgenda();
+  const conectada = d.conectada || d.autorizada;
+  const ativas = STATE.rotinas.filter((r) => r.ativa);
+  const rotOk = ativas.filter((r) => r.agendaEventoId).length;
+
+  /*
+    As contagens abaixo existem por causa do que ele reportou em 2026-09-17:
+    três tarefas avulsas não chegaram na agenda e a única forma de descobrir
+    foi abrir o Google Agenda e comparar item por item. O número tem que
+    estar aqui, não na cabeça dele.
+  */
+  const avulsas = STATE.tarefas.filter((t) => t.origem === "manual" && t.estado !== "descartada" && t.data >= STATE.hoje);
+  const avulsasOk = avulsas.filter((t) => t.agendaEventoId).length;
+  const atrasadas = STATE.tarefas.filter((t) => t.estado === "pendente" && t.data < STATE.hoje);
+  const atrasadasOk = atrasadas.filter((t) => t.agendaAtrasoId).length;
+  const faltando = (ativas.length - rotOk) + (avulsas.length - avulsasOk) + (atrasadas.length - atrasadasOk);
+
+  const linha = (rot, ok, total) => `
+    <div class="dado-linha">
+      <span class="rot">${esc(rot)}</span>
+      <span class="val num">${ok}/${total}${ok < total ? ` <span class="pill warn">falta ${total - ok}</span>` : ""}</span>
+    </div>`;
 
   abrirModal("Google Agenda",
-    `${!agendaConfigurada() ? `
+    `${!d.configurada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
         <span>Falta o ID do cliente OAuth em <code>firebase-init.js</code>.
-        O passo a passo está no <code>README.md</code>, passo 6.</span>
+        Passo 6 do <code>README.md</code>.</span>
       </div>` : ""}
-     <div class="dado-linha"><span class="rot">Situação</span><span class="val">${conectada ? "conectado" : "não conectado"}</span></div>
-     <div class="dado-linha"><span class="rot">Rotinas com evento recorrente</span><span class="val num">${rotComEvento}/${STATE.rotinas.filter((r) => r.ativa).length}</span></div>
-     <div class="dado-linha"><span class="rot">Atrasadas cobrando na agenda</span><span class="val num">${cobrancas}</span></div>
+     ${d.configurada && !conectada ? `
+      <div class="aviso">
+        <span class="ico">${ICONS.alerta}</span>
+        <span>Não conectado. Enquanto estiver assim, <strong>nada</strong> é lançado
+        na sua agenda, e o app não tem como avisar disso sozinho.</span>
+      </div>` : ""}
+     ${d.ultimoErro ? `
+      <div class="aviso">
+        <span class="ico">${ICONS.alerta}</span>
+        <span>Último erro da API, em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
+        <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code></span>
+      </div>` : ""}
+     ${conectada && !faltando && !d.ultimoErro ? `
+      <div class="aviso info">
+        <span class="ico">${ICONS.info}</span>
+        <span>Tudo que devia estar na agenda está.</span>
+      </div>` : ""}
+
+     <div class="dado-linha"><span class="rot">Situação</span><span class="val">${
+       d.conectada ? "conectado" : d.autorizada ? "autorizado, reconecta quando precisar" : "não conectado"
+     }</span></div>
+     ${linha("Rotinas com evento recorrente", rotOk, ativas.length)}
+     ${linha("Tarefas avulsas de hoje em diante", avulsasOk, avulsas.length)}
+     ${linha("Atrasadas com cobrança diária", atrasadasOk, atrasadas.length)}
+     <div class="dado-linha">
+       <span class="rot">Última sincronização</span>
+       <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "nunca nesta sessão"}</span>
+     </div>
+
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
-       <span>Rotina ativa vira evento semanal que notifica pra sempre, mesmo com o
-       app fechado. Atrasada vira série diária de 14 dias no horário original, e a
-       cobrança para quando você concluir ou descartar.
-       <br><br>O que depende de você abrir o app: uma tarefa que vence num dia em que
-       você nunca abriu ganha a cobrança só na próxima abertura.</span>
+       <span><strong>Rotina</strong> vira um evento semanal que notifica pra sempre,
+       mesmo com o app fechado.<br>
+       <strong>Tarefa avulsa</strong> vira um evento no horário dela. Concluir não
+       apaga esse evento, porque ele é registro do que aconteceu; descartar apaga.<br>
+       <strong>Atrasada</strong> vira uma série diária de 14 dias no horário original,
+       e essa para de cobrar quando você conclui ou descarta.<br><br>
+       O que depende de você abrir o app: uma tarefa que vence num dia em que você
+       nunca abriu ganha a cobrança só na próxima abertura.</span>
      </div>`,
     `${conectada ? `<button type="button" class="btn danger" id="a-desconectar">Desconectar</button>` : `<span></span>`}
      <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`

@@ -80,9 +80,10 @@ service cloud.firestore {
       allow read: if autorizado();
       allow create, update: if autorizado()
         && request.resource.data.keys().hasOnly([
-             'data','hora','titulo','categoriaId','estado','origem',
+             'data','hora','duracaoMin','titulo','categoriaId','estado','origem',
              'rotinaId','rotinaAtividadeId','rotinaNome',
              'concluidaEm','descartadaEm',
+             'agendaEventoId','agendaHash',
              'agendaAtrasoId','agendaAtrasoAte','createdAt'
            ])
         && dataISO(request.resource.data.data)

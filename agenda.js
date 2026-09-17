@@ -14,9 +14,32 @@
   1. Cada rotina ativa vira UM evento recorrente semanal
      (RRULE FREQ=WEEKLY;BYDAY=...). Criado uma vez, notifica pra sempre, com
      o app fechado.
-  2. Cada tarefa atrasada e não concluída vira UMA série diária de 14 dias no
+  2. Cada tarefa AVULSA de hoje em diante vira UM evento no horário dela. As
+     tarefas vindas de rotina não ganham evento próprio, porque o recorrente
+     do item 1 já cobre o horário delas; criar os dois duplicaria a
+     notificação.
+  3. Cada tarefa atrasada e ainda pendente vira UMA série diária de 14 dias no
      horário original em que ela deveria ter sido feita. O Agenda cobra todo
      dia naquela hora até ele concluir ou descartar, e aí o app apaga a série.
+
+  DIFERENÇA ENTRE OS DOIS TIPOS DE EVENTO, que decide o que é apagado:
+  o evento do item 2 é REGISTRO de um compromisso, então concluir a tarefa
+  não o apaga (a reunião aconteceu, e a agenda dele é lida por outras
+  pessoas). A série do item 3 é COBRANÇA, então concluir ou descartar apaga.
+  Descartar apaga os dois, porque descartar significa que o compromisso
+  deixou de existir.
+
+  CORRIGIDO EM 2026-09-17, depois de ele reportar "ao criar rotinas diárias
+  ele não está ocupando minha agenda, somente um funcionou". Duas causas na
+  mesma linha: o item 2 não existia (tarefa avulsa nunca chegava na agenda),
+  e a condição de atraso lia `tf.concluida`/`tf.descartada`, campos que
+  deixaram de existir quando o modelo passou a usar um campo `estado` só.
+  Negar `undefined` dá `true`, então a condição virou só a data: atrasada já
+  concluída ganhava cobrança, e concluir uma atrasada não apagava a
+  cobrança, quebrando a promessa escrita no README e na tela. Os outros 20
+  lugares que leem esse campo, todos no app.js, estavam certos — o único
+  errado era o que fala com a agenda, que é justamente o que falha calado
+  (crença 14 e crença 22).
 
   O furo conhecido, dito na cara: uma tarefa que vence num dia em que ele
   nunca abre o app só ganha a série de cobrança quando ele abrir. As rotinas
@@ -49,6 +72,18 @@ let token = null;        // { valor, expiraEm }
 let gisPronto = false;
 let sincronizando = false;
 const ouvintes = new Set();
+
+/*
+  Sem isto a sincronização silenciosa falhava sem deixar rastro na tela, e a
+  única forma de descobrir era abrir o Google Agenda e comparar item por
+  item. Agora o app.js lê daqui e mostra.
+*/
+let avisouTokenNaSessao = false;
+let avisouErroNaSessao = false;
+const DIAG = { ultimoErro: null, ultimaSinc: null, ultimasOps: 0, faltouToken: false };
+export function diagnosticoAgenda() {
+  return { ...DIAG, configurada: agendaConfigurada(), conectada: agendaConectada(), autorizada: agendaJaAutorizada() };
+}
 
 export function aoMudarAgenda(fn) { ouvintes.add(fn); }
 function avisar() { ouvintes.forEach((f) => { try { f(); } catch (_) {} }); }
@@ -234,6 +269,22 @@ function eventoDeAtraso(tarefa, nomeCategoria) {
  * reescrito; se não mudar, nenhuma chamada é feita. É o que impede a
  * sincronização de gastar cota reescrevendo tudo a cada abertura.
  */
+function eventoDaTarefa(tarefa, nomeCategoria) {
+  const dur = Number(tarefa.duracaoMin) || 30;
+  const cat = nomeCategoria(tarefa.categoriaId);
+  return {
+    summary: tarefa.titulo,
+    description: [cat ? `Categoria: ${cat}` : "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
+    start: { dateTime: iso(tarefa.data, tarefa.hora), timeZone: TZ },
+    end: { dateTime: iso(tarefa.data, tarefa.hora, dur), timeZone: TZ },
+    reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 0 }, { method: "popup", minutes: 10 }] },
+  };
+}
+
+function assinaturaTarefa(t) {
+  return JSON.stringify([t.titulo, t.data, t.hora, t.duracaoMin || 30, t.categoriaId || ""]);
+}
+
 function assinaturaRotina(r) {
   return JSON.stringify([
     r.nome, r.hora, r.duracaoMin || 30, [...(r.diasSemana || [])].sort(),
@@ -252,23 +303,35 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
   if (!agendaConfigurada()) return;
   const t = await garantirToken();
   if (!t) {
-    if (!silencioso) toast("Google Agenda não está conectado.", "erro");
+    DIAG.faltouToken = true;
+    if (!silencioso) {
+      toast("Google Agenda não está conectado.", "erro");
+    } else if (!avisouTokenNaSessao) {
+      // Avisa UMA vez por sessão. Sem isso a sincronização falhava calada e
+      // a única forma de descobrir era comparar com o Google Agenda na mão.
+      avisouTokenNaSessao = true;
+      toast("O Google Agenda não está conectado, nada está sendo lançado lá. Perfil › Configurações › Google Agenda.", "erro", 9000);
+    }
+    avisar();
     return;
   }
+  DIAG.faltouToken = false;
 
   sincronizando = true;
   const hoje = hojeISO();
   let ops = 0, erros = 0;
 
+  let tetoBatido = false;
   const passo = async (fn) => {
-    if (ops >= MAX_OPS_POR_RODADA) return false;
+    if (ops >= MAX_OPS_POR_RODADA) { tetoBatido = true; return false; }
     ops++;
     try { await fn(); } catch (err) {
       erros++;
-      if (String(err.message).startsWith("sem-token") || String(err.message).startsWith("token-expirado")) {
+      DIAG.ultimoErro = { mensagem: err.message || String(err), quando: Date.now() };
+      console.error("[agenda]", err);
+      if (/sem-token|token-expirado/.test(String(err.message))) {
         ops = MAX_OPS_POR_RODADA; // para a rodada, tenta de novo depois
-      } else {
-        console.error("[agenda]", err);
+        tetoBatido = true;
       }
     }
     return true;
@@ -309,10 +372,56 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
       });
     }
 
-    /* ── 2. atrasadas ── */
+    /* ── 2. evento do compromisso, só pra tarefa avulsa ──
+       Tarefa vinda de rotina não entra aqui: o recorrente do passo 1 já
+       cobre o horário dela, e criar os dois duplicaria a notificação.
+       Só de hoje em diante, pra não escrever histórico na agenda dele. */
+    for (const tf of tarefas) {
+      if (tf.origem !== "manual") continue;
+      const ref = doc(db, "tarefas", tf.id);
+
+      // descartada: o compromisso deixou de existir, sai da agenda.
+      // concluída NÃO apaga, porque o evento é registro do que aconteceu.
+      if (tf.estado === "descartada") {
+        if (tf.agendaEventoId) {
+          await passo(async () => {
+            await apagarEvento(tf.agendaEventoId);
+            await updateDoc(ref, { agendaEventoId: null, agendaHash: null });
+          });
+        }
+        continue;
+      }
+
+      if (tf.data < hoje && !tf.agendaEventoId) continue; // passado nunca sincronizado
+
+      const hash = assinaturaTarefa(tf);
+      if (tf.agendaEventoId && tf.agendaHash === hash) continue;
+
+      await passo(async () => {
+        const ev = eventoDaTarefa(tf, nomeCategoria);
+        if (tf.agendaEventoId) {
+          const resp = await atualizarEvento(tf.agendaEventoId, ev);
+          if (resp.ausente) {
+            const novoEv = await criarEvento(ev);
+            if (novoEv?.id) await updateDoc(ref, { agendaEventoId: novoEv.id, agendaHash: hash });
+          } else {
+            await updateDoc(ref, { agendaHash: hash });
+          }
+        } else {
+          const novoEv = await criarEvento(ev);
+          if (novoEv?.id) await updateDoc(ref, { agendaEventoId: novoEv.id, agendaHash: hash });
+        }
+      });
+    }
+
+    /* ── 3. cobrança diária das atrasadas ──
+       `estado` é o campo real do modelo. A versão anterior lia
+       tf.concluida/tf.descartada, que nunca existiram: negar undefined dá
+       true, a condição virava só a data, atrasada já concluída ganhava
+       cobrança e concluir não apagava nada. */
     for (const tf of tarefas) {
       const ref = doc(db, "tarefas", tf.id);
-      const atrasada = tf.data < hoje && !tf.concluida && !tf.descartada;
+      const atrasada = tf.estado === "pendente" && tf.data < hoje;
 
       if (!atrasada) {
         if (tf.agendaAtrasoId) {
@@ -330,18 +439,31 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
       await passo(async () => {
         if (tf.agendaAtrasoId) await apagarEvento(tf.agendaAtrasoId);
         const { evento, cobreAte } = eventoDeAtraso(tf, nomeCategoria);
-        const novo = await criarEvento(evento);
-        await updateDoc(ref, { agendaAtrasoId: novo.id, agendaAtrasoAte: cobreAte });
+        const novoEv = await criarEvento(evento);
+        if (novoEv?.id) await updateDoc(ref, { agendaAtrasoId: novoEv.id, agendaAtrasoAte: cobreAte });
       });
     }
 
+    DIAG.ultimaSinc = Date.now();
+    DIAG.ultimasOps = ops;
+    if (!erros) DIAG.ultimoErro = null;
+
     if (!silencioso) {
-      if (erros) toast(`Agenda sincronizada com ${erros} erro(s). Veja o console.`, "erro");
+      if (erros) toast(`A agenda recusou ${erros} evento(s). O motivo está em Configurações › Google Agenda.`, "erro", 9000);
       else if (ops) toast(`Agenda atualizada (${ops} evento${ops > 1 ? "s" : ""}).`, "sucesso");
       else toast("Agenda já estava em dia.", "info");
+    } else if (erros && !avisouErroNaSessao) {
+      avisouErroNaSessao = true;
+      toast("Algo não foi pro Google Agenda. Veja Perfil › Configurações › Google Agenda.", "erro", 9000);
     }
   } finally {
     sincronizando = false;
+    avisar();
+    // Teto por rodada existe pra não travar a tela. Se ele bateu, ainda há
+    // fila: em vez de esperar a próxima mudança, continua sozinho.
+    if (tetoBatido && !DIAG.faltouToken) {
+      setTimeout(() => sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silencioso: true }), 4000);
+    }
   }
 }
 
