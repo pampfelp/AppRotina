@@ -22,12 +22,12 @@ import {
 import { getAuth, connectAuthEmulator } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
 export const firebaseConfig = {
-  apiKey: "COLE_AQUI",
-  authDomain: "SEU-PROJETO.firebaseapp.com",
-  projectId: "SEU-PROJETO",
-  storageBucket: "SEU-PROJETO.firebasestorage.app",
-  messagingSenderId: "COLE_AQUI",
-  appId: "COLE_AQUI",
+  apiKey: "AIzaSyB2NeOyCUHYGwWzT6Vt8tKD0En-Iz-LmyA",
+  authDomain: "approtina-54752.firebaseapp.com",
+  projectId: "approtina-54752",
+  storageBucket: "approtina-54752.firebasestorage.app",
+  messagingSenderId: "1031461486725",
+  appId: "1:1031461486725:web:727427ac70a19bfe33e9ec"
 };
 
 /*
@@ -36,7 +36,7 @@ export const firebaseConfig = {
   design; o que é segredo é o client secret, que este app nunca usa).
   Passo a passo pra gerar em README.md.
 */
-export const GOOGLE_CLIENT_ID = "COLE_AQUI.apps.googleusercontent.com";
+export const GOOGLE_CLIENT_ID = "1031461486725-71b80n9ji0dj9je3ikbu3qblsclvea90.apps.googleusercontent.com";
 
 /** E-mails autorizados. Precisa bater com a lista das firestore.rules. */
 export const EMAILS_AUTORIZADOS = ["felipecastiged@gmail.com"];
