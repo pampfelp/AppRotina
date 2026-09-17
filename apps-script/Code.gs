@@ -85,7 +85,9 @@ function sincronizarAgendaAppRotina() {
 function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
   let ops = 0;
   rotinas.forEach((r) => {
-    const semConteudo = !r.ativa || !(r.diasSemana || []).length || !(r.atividades || []).length;
+    // rotina sem atividade cadastrada não é mais "sem conteúdo": ela é a
+    // própria atividade agora, então só sai da agenda se pausada ou sem dia
+    const semConteudo = !r.ativa || !(r.diasSemana || []).length;
 
     if (semConteudo) {
       if (r.agendaEventoId) {
@@ -110,13 +112,20 @@ function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
   return ops;
 }
 
+/** Espelha app.js#atividadesEfetivas: sem atividade cadastrada, a rotina é
+    a própria atividade, usando a categoria dela mesma. */
+function atividadesEfetivas_(rotina) {
+  if ((rotina.atividades || []).length) return rotina.atividades;
+  return [{ id: "self", titulo: "", categoriaId: rotina.categoriaId || "" }];
+}
+
 function eventoDaRotina_(rotina, nomeCategoria) {
   const dias = (rotina.diasSemana || []).slice().sort((a, b) => a - b);
   const inicio = primeiraOcorrencia_(dias);
   const dur = Number(rotina.duracaoMin) || 30;
   // Título da atividade é opcional (só a categoria é obrigatória); sem
   // título, a categoria é o que descreve a linha.
-  const lista = (rotina.atividades || [])
+  const lista = atividadesEfetivas_(rotina)
     .map((a) => {
       const cat = nomeCategoria(a.categoriaId);
       if (a.titulo && cat) return `• ${a.titulo} (${cat})`;
@@ -246,7 +255,7 @@ function eventoDeAtraso_(t, nomeCategoria, hoje) {
 function assinaturaRotina_(r) {
   return JSON.stringify([
     r.nome, r.hora, r.duracaoMin || 30, (r.diasSemana || []).slice().sort((a, b) => a - b),
-    (r.atividades || []).map((a) => [a.titulo, a.categoriaId]),
+    atividadesEfetivas_(r).map((a) => [a.titulo, a.categoriaId]),
   ]);
 }
 

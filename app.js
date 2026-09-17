@@ -9,8 +9,13 @@
   ───────────────
   categorias/{id}   { nome, cor, ordem, ativa, createdAt }
   rotinas/{id}      { nome, hora, duracaoMin, diasSemana:[0..6], ativa,
-                      atividades:[{ id, titulo, categoriaId }],
+                      categoriaId, atividades:[{ id, titulo, categoriaId }],
                       agendaEventoId, agendaHash, createdAt }
+
+  A rotina sempre tem `categoriaId` própria: é a categoria usada quando ela
+  não tem nenhuma atividade cadastrada, porque nesse caso a rotina É a
+  própria atividade (decisão do Felipe em 2026-09-18 — "criar uma rotina,
+  automaticamente ela é a própria atividade"). Ver atividadesEfetivas().
   tarefas/{id}      { data:"YYYY-MM-DD", hora:"HH:MM", duracaoMin, titulo,
                       categoriaId,
                       estado:"pendente"|"concluida"|"descartada",
@@ -292,7 +297,7 @@ async function materializar() {
     const dow = diaSemanaISO(dia);
     for (const r of STATE.rotinas) {
       if (!r.ativa || !(r.diasSemana || []).includes(dow)) continue;
-      for (const a of r.atividades || []) {
+      for (const a of atividadesEfetivas(r)) {
         const id = idTarefaRotina(dia, r.id, a.id);
         if (existentes.has(id)) continue;
         novas.push([id, tarefaDaAtividade(dia, r, a)]);
@@ -334,7 +339,7 @@ async function lancarProximosDias(dias) {
     const dow = diaSemanaISO(dia);
     for (const r of STATE.rotinas) {
       if (!r.ativa || !(r.diasSemana || []).includes(dow)) continue;
-      for (const a of r.atividades || []) {
+      for (const a of atividadesEfetivas(r)) {
         const id = idTarefaRotina(dia, r.id, a.id);
         if (existentes.has(id)) continue;
         novas.push([id, tarefaDaAtividade(dia, r, a)]);
@@ -361,7 +366,7 @@ async function lancarRotinaHoje(rotina) {
   const existentes = new Set(STATE.tarefas.filter((t) => t.data === STATE.hoje).map((t) => t.id));
   const batch = writeBatch(db);
   let n = 0;
-  for (const a of rotina.atividades || []) {
+  for (const a of atividadesEfetivas(rotina)) {
     const id = idTarefaRotina(STATE.hoje, rotina.id, a.id);
     if (existentes.has(id)) continue;
     batch.set(doc(db, "tarefas", id), tarefaDaAtividade(STATE.hoje, rotina, a));
@@ -381,7 +386,7 @@ async function lancarRotinaHoje(rotina) {
  *   aconteceu de verdade.
  */
 async function limparOrfasDaRotina(rotina) {
-  const vivos = new Set((rotina.atividades || []).map((a) => a.id));
+  const vivos = new Set(atividadesEfetivas(rotina).map((a) => a.id));
   const daRotinaEmDiante = (t) => t.rotinaId === rotina.id && t.data >= STATE.hoje;
 
   const orfas = !rotina.ativa
@@ -429,6 +434,17 @@ function tagCategoria(id) {
 /** Nome de exibição de uma atividade de rotina, já que o próprio título dela
     deixou de ser obrigatório (a categoria virou o que identifica a linha). */
 const rotuloAtividade = (a) => a.titulo || nomeCategoria(a.categoriaId) || "atividade";
+
+/**
+ * Atividades que a rotina realmente lança. Sem nenhuma cadastrada, a rotina
+ * é a própria atividade — usa o nome e a categoria dela mesma, com um id
+ * fixo ("self") pra manter o esquema de id determinístico das tarefas
+ * (`idTarefaRotina`) funcionando igual.
+ */
+function atividadesEfetivas(rotina) {
+  if ((rotina.atividades || []).length) return rotina.atividades;
+  return [{ id: "self", titulo: "", categoriaId: rotina.categoriaId || "" }];
+}
 
 /* Cria uma categoria "on the fly", a partir do combobox de categoria. Ainda
    assim ela nasce como um registro de verdade em `categorias/`, com id e cor
@@ -1019,7 +1035,7 @@ function renderRotinas() {
   const ativas = STATE.rotinas.filter((r) => r.ativa);
   $("kpi-r-ativas").textContent = ativas.length;
   $("kpi-r-semana").textContent = ativas.reduce(
-    (s, r) => s + (r.diasSemana || []).length * (r.atividades || []).length, 0);
+    (s, r) => s + (r.diasSemana || []).length * atividadesEfetivas(r).length, 0);
 
   const alvo = $("lista-rotinas");
   const vazio = $("empty-rotinas");
@@ -1050,9 +1066,10 @@ function renderRotinas() {
       <div class="rotina-topo">
         <div style="flex:1; min-width:0;">
           <div class="rotina-nome">${esc(r.nome)}</div>
-          <div style="display:flex; align-items:center; gap:9px; margin-top:3px;">
+          <div style="display:flex; align-items:center; gap:9px; margin-top:3px; flex-wrap:wrap;">
             <span class="rotina-hora">${esc(r.hora || "--:--")}</span>
-            <span class="cat-tag" style="color:var(--ink-faint);">${(r.atividades || []).length} atividade${(r.atividades || []).length === 1 ? "" : "s"}</span>
+            ${tagCategoria(r.categoriaId)}
+            ${(r.atividades || []).length ? `<span class="cat-tag" style="color:var(--ink-faint);">+${(r.atividades || []).length} atividade${(r.atividades || []).length === 1 ? "" : "s"}</span>` : ""}
           </div>
         </div>
         <div class="tarefa-acoes">
@@ -1068,14 +1085,14 @@ function renderRotinas() {
         ${[1, 2, 3, 4, 5, 6, 0].map((d) =>
           `<span class="dia-chip fixo ${(r.diasSemana || []).includes(d) ? "on" : ""}">${curtoDiaSemana(d)}</span>`).join("")}
       </div>
-      <div class="rotina-atividades">
-        ${(r.atividades || []).map((a) => `
+      ${(r.atividades || []).length ? `<div class="rotina-atividades">
+        ${r.atividades.map((a) => `
           <div class="rotina-atividade">
             <span class="cat-ponto" style="background:${esc(corCategoria(a.categoriaId))}"></span>
             <span class="txt">${esc(rotuloAtividade(a))}</span>
             <span style="color:var(--ink-faint); font-size:12px; flex-shrink:0;">${esc(nomeCategoria(a.categoriaId))}</span>
-          </div>`).join("") || `<div class="hint">Sem atividades — só o lembrete no Google Agenda.</div>`}
-      </div>
+          </div>`).join("")}
+      </div>` : ""}
     </div>`).join("");
 
   alvo.querySelectorAll("[data-toggle-rotina]").forEach((b) =>
@@ -1097,7 +1114,8 @@ function modalVerRotina(id) {
   const feitas = lancadas.filter((t) => t.estado === "concluida").length;
 
   abrirModal(r.nome,
-    `<div class="dado-linha"><span class="rot">Horário</span><span class="val num">${esc(r.hora || "--:--")}</span></div>
+    `<div class="dado-linha"><span class="rot">Categoria</span><span class="val">${tagCategoria(r.categoriaId)}</span></div>
+     <div class="dado-linha"><span class="rot">Horário</span><span class="val num">${esc(r.hora || "--:--")}</span></div>
      <div class="dado-linha"><span class="rot">Duração</span><span class="val num">${esc(String(r.duracaoMin || 30))} min</span></div>
      <div class="dado-linha"><span class="rot">Dias</span><span class="val">${
        (r.diasSemana || []).slice().sort().map((d) => nomeDiaSemana(d).replace("-feira", "")).join(", ") || "nenhum"
@@ -1107,17 +1125,17 @@ function modalVerRotina(id) {
        r.agendaEventoId ? "evento recorrente criado" : "ainda não sincronizada"
      }</span></div>
      <div class="dado-linha"><span class="rot">Nos últimos 90 dias</span><span class="val num">${feitas}/${lancadas.length}</span></div>
-     <div style="margin-top:16px;">
-       <label>Atividades</label>
+     ${(r.atividades || []).length ? `<div style="margin-top:16px;">
+       <label>Atividades extras</label>
        <div class="rotina-atividades">
-         ${(r.atividades || []).map((a) => `
+         ${r.atividades.map((a) => `
            <div class="rotina-atividade">
              <span class="cat-ponto" style="background:${esc(corCategoria(a.categoriaId))}"></span>
              <span class="txt">${esc(rotuloAtividade(a))}</span>
              <span style="color:var(--ink-faint); font-size:12px;">${esc(nomeCategoria(a.categoriaId))}</span>
-           </div>`).join("") || `<div class="hint">Nenhuma atividade — só o lembrete no Google Agenda.</div>`}
+           </div>`).join("")}
        </div>
-     </div>`,
+     </div>` : `<div class="hint" style="margin-top:12px;">Sem atividades extras — a categoria da própria rotina já é o que lança no checklist.</div>`}`,
     `<span></span>
      <button type="button" class="btn" data-fechar-modal>Fechar</button>
      <button type="button" class="btn primary" id="r-editar">Editar</button>`
@@ -1135,6 +1153,11 @@ function modalRotina(rotina) {
     `<div class="field">
        <label for="r-nome">Nome da rotina <span class="obr">*</span></label>
        <input id="r-nome" type="text" maxlength="80" value="${esc(rotina?.nome || "")}" placeholder="Ex.: Bloco da manhã" />
+     </div>
+     <div class="field">
+       <label>Categoria da rotina <span class="obr">*</span></label>
+       <div id="r-cat-wrap">${htmlComboCategoria({ dataI: "r", categoriaId: rotina?.categoriaId || "" })}</div>
+       <div class="hint">Vale pro ranking sempre que a rotina não tiver nenhuma atividade cadastrada — nesse caso, ela é a própria atividade.</div>
      </div>
      <div class="field field-2">
        <div>
@@ -1180,6 +1203,8 @@ function modalRotina(rotina) {
      <button type="button" class="btn primary" id="r-salvar">Salvar</button>`
   );
 
+  ligarCombosCategoria(corpo.querySelector("#r-cat-wrap"));
+
   const alvoAtivs = corpo.querySelector("#r-ativs");
   function renderAtivs() {
     alvoAtivs.innerHTML = atividades.map((a, i) => `
@@ -1188,7 +1213,7 @@ function modalRotina(rotina) {
                value="${esc(a.titulo)}" placeholder="Título (opcional)" />
         ${htmlComboCategoria({ dataI: i, categoriaId: a.categoriaId })}
         <button type="button" data-remover="${i}" aria-label="Remover"><span class="ico">${ICONS.excluir}</span></button>
-      </div>`).join("") || `<div class="hint">Nenhuma atividade — a rotina vira só um lembrete no Google Agenda.</div>`;
+      </div>`).join("") || `<div class="hint">Nenhuma atividade extra — a categoria da rotina acima já é o que lança no checklist.</div>`;
 
     ligarCombosCategoria(alvoAtivs);
     alvoAtivs.querySelectorAll("[data-campo]").forEach((el) => {
@@ -1218,6 +1243,7 @@ function modalRotina(rotina) {
 
   $("r-salvar").addEventListener("click", async () => {
     const nome = corpo.querySelector("#r-nome").value.trim();
+    const categoriaId = corpo.querySelector("#r-cat-wrap .combo-valor").value;
     const hora = corpo.querySelector("#r-hora").value;
     const duracaoMin = Number(corpo.querySelector("#r-dur").value) || 30;
     const ativa = editando ? corpo.querySelector("#r-ativa").value === "1" : true;
@@ -1229,6 +1255,7 @@ function modalRotina(rotina) {
       .filter((a) => a.titulo || a.categoriaId);
 
     if (!nome) return toast("Informe o nome da rotina.", "erro");
+    if (!categoriaId) return toast("Escolha a categoria da rotina.", "erro");
     if (!hora) return toast("Informe o horário.", "erro");
     if (!dias.size) return toast("Marque pelo menos um dia da semana.", "erro");
     if (tocadas.some((a) => !a.categoriaId)) return toast("Toda atividade precisa de uma categoria.", "erro");
@@ -1236,7 +1263,7 @@ function modalRotina(rotina) {
 
     const id = rotina?.id || `r-${gerarId()}`;
     const dados = {
-      nome, hora, duracaoMin, ativa,
+      nome, categoriaId, hora, duracaoMin, ativa,
       diasSemana: [...dias].sort(),
       atividades: limpas,
       ...(editando ? {} : { agendaEventoId: null, agendaHash: null, createdAt: serverTimestamp() }),

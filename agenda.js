@@ -222,6 +222,17 @@ function primeiraOcorrencia(dias) {
   return hoje;
 }
 
+/**
+ * Atividades que a rotina realmente lança. Sem nenhuma cadastrada, a rotina
+ * é a própria atividade — usa a categoria dela mesma (crença nova,
+ * 2026-09-18: "criar uma rotina, automaticamente ela é a própria
+ * atividade"). Espelha app.js#atividadesEfetivas.
+ */
+function atividadesEfetivas(rotina) {
+  if ((rotina.atividades || []).length) return rotina.atividades;
+  return [{ id: "self", titulo: "", categoriaId: rotina.categoriaId || "" }];
+}
+
 function eventoDaRotina(rotina, nomeCategoria) {
   const dias = [...(rotina.diasSemana || [])].sort();
   const inicio = primeiraOcorrencia(dias);
@@ -231,7 +242,7 @@ function eventoDaRotina(rotina, nomeCategoria) {
     uma atividade sem título geraria uma linha "• " vazia na descrição do
     evento. Quando falta o título, a categoria é o que descreve a linha.
   */
-  const lista = (rotina.atividades || [])
+  const lista = atividadesEfetivas(rotina)
     .map((a) => {
       const cat = nomeCategoria(a.categoriaId);
       if (a.titulo && cat) return `• ${a.titulo} (${cat})`;
@@ -299,7 +310,7 @@ function assinaturaTarefa(t) {
 function assinaturaRotina(r) {
   return JSON.stringify([
     r.nome, r.hora, r.duracaoMin || 30, [...(r.diasSemana || [])].sort(),
-    (r.atividades || []).map((a) => [a.titulo, a.categoriaId]),
+    atividadesEfetivas(r).map((a) => [a.titulo, a.categoriaId]),
   ]);
 }
 
@@ -353,7 +364,10 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
     for (const r of rotinas) {
       const ref = doc(db, "rotinas", r.id);
 
-      if (!r.ativa || !(r.diasSemana || []).length || !(r.atividades || []).length) {
+      // rotina sem atividade cadastrada não é mais "sem conteúdo": ela é a
+      // própria atividade agora, então só sai da agenda se estiver pausada
+      // ou sem nenhum dia da semana marcado
+      if (!r.ativa || !(r.diasSemana || []).length) {
         if (r.agendaEventoId) {
           await passo(async () => {
             await apagarEvento(r.agendaEventoId);

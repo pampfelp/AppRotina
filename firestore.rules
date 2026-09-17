@@ -57,11 +57,14 @@ service cloud.firestore {
       allow read: if autorizado();
       allow create, update: if autorizado()
         && request.resource.data.keys().hasOnly([
-             'nome','hora','duracaoMin','ativa','diasSemana','atividades',
+             'nome','hora','duracaoMin','ativa','diasSemana','categoriaId','atividades',
              'agendaEventoId','agendaHash','createdAt'
            ])
         && textoCheio(request.resource.data.nome, 80)
         && horaHM(request.resource.data.hora)
+        // a rotina sempre tem categoria própria: sem atividade cadastrada,
+        // ela é a própria atividade (crença nova, 2026-09-18)
+        && textoCheio(request.resource.data.categoriaId, 60)
         && request.resource.data.duracaoMin is int
         && request.resource.data.duracaoMin >= 5
         && request.resource.data.duracaoMin <= 600

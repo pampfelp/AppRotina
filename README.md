@@ -271,6 +271,14 @@ a ser recusada** com `permission-denied`.
 É o passo 4 de novo: console do Firebase → Firestore Database → aba Regras →
 apagar o conteúdo → colar o `firestore.rules` deste repositório → Publicar.
 
+**Republique de novo em 2026-09-18.** Rotina ganhou uma categoria própria
+obrigatória (`categoriaId`) — é ela que a rotina usa quando não tem nenhuma
+atividade cadastrada, porque nesse caso a rotina é a própria atividade. As
+regras agora exigem esse campo. **Rotina criada antes disso não tem esse
+campo gravado**, e qualquer gravação nela (inclusive só pausar/reativar pelo
+botão rápido) vai ser recusada até você abrir essa rotina, escolher uma
+categoria e salvar uma vez.
+
 ---
 
 ## Checklist de "está tudo ligado?"
