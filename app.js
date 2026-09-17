@@ -414,16 +414,32 @@ async function lancarAtividadeAgora(rotina) {
   const alvo = dias.includes(dow) ? STATE.hoje : proximaOcorrenciaISO(dias, STATE.hoje);
 
   const atividades = atividadesEfetivas(rotina);
-  const existentes = new Set(
-    STATE.tarefas
-      .filter((t) => t.data === alvo && t.rotinaId === rotina.id)
-      .map((t) => t.rotinaAtividadeId)
-  );
+  const jaLancadas = STATE.tarefas.filter((t) => t.data === alvo && t.rotinaId === rotina.id);
+  const existentes = new Set(jaLancadas.map((t) => t.rotinaAtividadeId));
   const faltando = atividades.filter((a) => !existentes.has(a.id));
   const quando = rotuloDataCurta(alvo);
 
   if (!faltando.length) {
-    return toast(`Já existe: "${rotina.nome}" já está lançada em ${quando}.`, "info");
+    /*
+      Existência é checada sem olhar o estado — crença 9, nunca recria por
+      cima de uma marcação real. Mas "já existe" sozinho engana quando o
+      motivo é ter sido DESCARTADA de propósito: sem dizer isso, parece que
+      o botão travou, quando na verdade ele está respeitando uma decisão
+      já tomada (2026-09-18, pedido dele: avisar "atividade já criada e
+      descartada" em vez de um "já existe" genérico).
+    */
+    const descartadas = jaLancadas.filter((t) => t.estado === "descartada").length;
+    const concluidas = jaLancadas.filter((t) => t.estado === "concluida").length;
+    if (descartadas === jaLancadas.length) {
+      toast(`"${rotina.nome}" já foi criada e descartada em ${quando}. Não volta sozinha — em Painel › Histórico dá pra restaurar, se quiser fazer mesmo assim.`, "info", 8000);
+    } else if (descartadas) {
+      toast(`"${rotina.nome}" já existe em ${quando}, com parte descartada. Veja o Histórico, no Painel, se quiser restaurar alguma.`, "info", 8000);
+    } else if (concluidas === jaLancadas.length) {
+      toast(`"${rotina.nome}" já foi concluída em ${quando}.`, "info");
+    } else {
+      toast(`Já existe: "${rotina.nome}" já está lançada em ${quando}.`, "info");
+    }
+    return;
   }
 
   const batch = writeBatch(db);
@@ -433,7 +449,7 @@ async function lancarAtividadeAgora(rotina) {
   const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar a atividade.");
   if (!ok) return;
 
-  const parcial = existentes.size > 0;
+  const parcial = jaLancadas.length > 0;
   toast(`"${rotina.nome}" lançada em ${quando}${parcial ? " (o resto já existia)" : ""}.`, "sucesso");
   agendarSincronizacao();
 }
