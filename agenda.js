@@ -320,7 +320,12 @@ function assinaturaRotina(r) {
  * Compara o que está no Firestore com o que já foi pro Agenda e manda só a
  * diferença. Idempotente: rodar duas vezes seguidas não cria nada a mais.
  */
-export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silencioso = true }) {
+export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email, silencioso = true }) {
+  // cada pessoa grava no próprio espaço (usuarios/{email}/...); sem isso, a
+  // volta do id do evento cairia na conta errada
+  const dono = String(email || "").toLowerCase();
+  if (!dono) return; // sem dono não há espaço pra gravar o id do evento
+  const docDoDono = (colecao, id) => doc(db, "usuarios", dono, colecao, id);
   if (sincronizando) return;
   if (!agendaConfigurada()) return;
   const t = await garantirToken();
@@ -362,7 +367,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
   try {
     /* ── 1. rotinas ── */
     for (const r of rotinas) {
-      const ref = doc(db, "rotinas", r.id);
+      const ref = docDoDono("rotinas", r.id);
 
       // rotina sem atividade cadastrada não é mais "sem conteúdo": ela é a
       // própria atividade agora, então só sai da agenda se estiver pausada
@@ -403,7 +408,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
        Só de hoje em diante, pra não escrever histórico na agenda dele. */
     for (const tf of tarefas) {
       if (tf.origem !== "manual") continue;
-      const ref = doc(db, "tarefas", tf.id);
+      const ref = docDoDono("tarefas", tf.id);
 
       // descartada: o compromisso deixou de existir, sai da agenda.
       // concluída NÃO apaga, porque o evento é registro do que aconteceu.
@@ -445,7 +450,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
        true, a condição virava só a data, atrasada já concluída ganhava
        cobrança e concluir não apagava nada. */
     for (const tf of tarefas) {
-      const ref = doc(db, "tarefas", tf.id);
+      const ref = docDoDono("tarefas", tf.id);
       const atrasada = tf.estado === "pendente" && tf.data < hoje;
 
       if (!atrasada) {

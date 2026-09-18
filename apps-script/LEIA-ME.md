@@ -18,6 +18,11 @@ rápido — uns 5 minutos, um copiar e colar, um "Executar" e pronto.
 2. Clique em **Novo projeto**.
 3. No canto de cima, troque o nome "Projeto sem título" por `AppRotina Agenda`.
 
+> **Duas pessoas usando o app?** Cada uma instala a própria cópia deste
+> script, na própria conta Google, trocando a constante `EMAIL_DONO` no topo
+> do `Code.gs` pelo e-mail dela. O script escreve na agenda de quem autorizou
+> ele, então dono do script e dono dos dados precisam ser a mesma pessoa.
+
 ### 2 — colar o código
 
 1. Vai abrir um arquivo `Código.gs` vazio (ou com uma função `myFunction`

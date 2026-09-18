@@ -38,8 +38,22 @@ export const firebaseConfig = {
 */
 export const GOOGLE_CLIENT_ID = "1031461486725-71b80n9ji0dj9je3ikbu3qblsclvea90.apps.googleusercontent.com";
 
-/** E-mails autorizados. Precisa bater com a lista das firestore.rules. */
-export const EMAILS_AUTORIZADOS = ["felipecastiged@gmail.com"];
+/*
+  Quem pode entrar. Cada e-mail desta lista ganha o próprio espaço em
+  `usuarios/{email}/...` e nunca vê o do outro — a lista só decide quem
+  entra, não quem vê o quê.
+
+  Ela existe porque, sem lista, qualquer conta Google criaria espaço aqui e
+  gastaria a mesma cota gratuita do projeto.
+
+  PRECISA BATER com a lista das firestore.rules. Duas listas em mãos
+  diferentes divergem em silêncio (crença 14): ao acrescentar alguém,
+  acrescente nos dois lugares.
+*/
+export const EMAILS_AUTORIZADOS = [
+  "felipecastiged@gmail.com",
+  // "email-da-sua-mulher@gmail.com",
+];
 
 const app = initializeApp(firebaseConfig);
 

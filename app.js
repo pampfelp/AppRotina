@@ -88,6 +88,29 @@ const $ = (id) => document.getElementById(id);
 const tip = tooltipGrafico();
 let nav = null;
 
+/* ═══════════════════ espaço de cada pessoa ═══════════════════ */
+/*
+  Cada usuário tem o próprio espaço em `usuarios/{email}/...`, e nunca
+  enxerga o do outro. Duas razões pra ser SUBCOLEÇÃO por e-mail em vez de um
+  campo `dono` em cada documento:
+
+  1. As consultas continuam com o formato de hoje (uma igualdade, ou uma
+     faixa de data), então nenhum índice composto novo precisa ser criado.
+     Com um campo `dono`, `dono == X && data >= Y` viraria índice composto,
+     e índice que falta só aparece em produção, como erro.
+  2. Ninguém consegue forjar o dono numa gravação: o caminho é a permissão.
+     Com um campo, a regra teria que conferir o campo em toda escrita, e
+     esquecer um lugar abriria vazamento entre as duas contas.
+
+  E-mail, não uid, pelo mesmo motivo já documentado nas firestore.rules: o
+  login Google e o login por senha geram uids diferentes pro mesmo e-mail, e
+  ele veria duas listas dependendo de como entrou.
+*/
+const emailDono = () => String(STATE.user?.email || "").toLowerCase();
+const col = (nome) => collection(db, "usuarios", emailDono(), nome);
+const docRef = (nome, id) => doc(db, "usuarios", emailDono(), nome, id);
+const LEGADO_DE = "felipecastiged@gmail.com"; // única conta com dados na raiz, antes de 2026-09-18
+
 /* ═══════════════════════════ ícones ═══════════════════════════ */
 /* Nunca emoji (crença 5). Os spans .ico do HTML nascem vazios e recebem o
    SVG aqui, num lugar só. */
@@ -140,7 +163,7 @@ function deslogar() {
   $("tela-login").classList.add("show");
 }
 
-function entrar(user) {
+async function entrar(user) {
   STATE.user = user;
   $("tela-login").classList.remove("show");
   $("app").classList.add("pronto");
@@ -154,14 +177,95 @@ function entrar(user) {
     vigiarViradaDoDia();
   }
   renderPerfil();
+  // migra antes de escutar, senão as escutas abririam num espaço ainda vazio.
+  // Qualquer falha aqui não pode impedir o app de abrir.
+  try { await migrarParaEspacoDoUsuario(); } catch (err) { console.error(err); }
   abrirEscutas();
+}
+
+/* ═════════ migração 2026-09-18 — código de passagem, apagar depois ═════════ */
+/*
+  Enquanto o app era de uma pessoa só, tudo morava em coleções na raiz
+  (`tarefas/`, `rotinas/`, `categorias/`, `config/`). Com duas contas, cada
+  uma passou a ter o próprio espaço em `usuarios/{email}/...`, e o que já
+  existe precisa ser movido pra lá — senão o app abre vazio, com meses de
+  histórico "sumidos".
+
+  A ordem importa: copia tudo, marca como migrado, e só então apaga a
+  origem. Assim, uma falha no meio no máximo deixa lixo na raiz (que o app
+  não lê mais), nunca perde registro nem sobrescreve dado novo com cópia
+  velha numa segunda tentativa.
+
+  Quando tiver rodado, isto sai daqui e o bloco LEGADO das firestore.rules
+  sai de lá.
+*/
+async function migrarParaEspacoDoUsuario() {
+  if (emailDono() !== LEGADO_DE) return; // só a conta que tem dados na raiz
+
+  const marcaRef = docRef("config", "migracao");
+  try {
+    if ((await getDoc(marcaRef)).exists()) return;
+  } catch (err) { console.error(err); return; }
+
+  let legado;
+  try {
+    const [categorias, rotinas, tarefas, perfil, estado] = await Promise.all([
+      getDocs(collection(db, "categorias")),
+      getDocs(collection(db, "rotinas")),
+      getDocs(collection(db, "tarefas")),
+      getDoc(doc(db, "config", "perfil")),
+      getDoc(doc(db, "config", "estado")),
+    ]);
+    legado = { categorias, rotinas, tarefas, perfil, estado };
+  } catch (err) {
+    console.error(err); // sem permissão na raiz, ou raiz já limpa: não há o que migrar
+    return;
+  }
+
+  const copias = [
+    ...legado.categorias.docs.map((d) => [docRef("categorias", d.id), d.data()]),
+    ...legado.rotinas.docs.map((d) => [docRef("rotinas", d.id), d.data()]),
+    ...legado.tarefas.docs.map((d) => [docRef("tarefas", d.id), d.data()]),
+  ];
+  if (legado.perfil.exists()) copias.push([docRef("config", "perfil"), legado.perfil.data()]);
+  if (legado.estado.exists()) copias.push([docRef("config", "estado"), legado.estado.data()]);
+
+  if (copias.length) {
+    toast("Movendo seus dados pro seu espaço…", "info", 8000);
+    for (let i = 0; i < copias.length; i += 450) {
+      const batch = writeBatch(db);
+      copias.slice(i, i + 450).forEach(([ref, dados]) => batch.set(ref, dados));
+      const ok = await emSegundoPlano(batch.commit(),
+        "Não foi possível mover seus dados. Nada foi apagado — abra o app de novo pra tentar.");
+      if (!ok) return;
+    }
+  }
+
+  await emSegundoPlano(setDoc(marcaRef, { em: hojeISO() }), "Não foi possível marcar a migração.");
+
+  // daqui pra baixo é só limpeza: o app já funciona no espaço novo, e o que
+  // sobrar na raiz não aparece em tela nenhuma
+  const antigos = [
+    ...legado.categorias.docs.map((d) => d.ref),
+    ...legado.rotinas.docs.map((d) => d.ref),
+    ...legado.tarefas.docs.map((d) => d.ref),
+    ...(legado.perfil.exists() ? [legado.perfil.ref] : []),
+    ...(legado.estado.exists() ? [legado.estado.ref] : []),
+  ];
+  for (let i = 0; i < antigos.length; i += 450) {
+    const batch = writeBatch(db);
+    antigos.slice(i, i + 450).forEach((ref) => batch.delete(ref));
+    try { await batch.commit(); } catch (err) { console.error(err); break; }
+  }
+
+  if (copias.length) toast(`${copias.length} registro(s) movidos pro seu espaço.`, "sucesso", 7000);
 }
 
 /* ═══════════════════════════ escutas ═══════════════════════════ */
 
 function abrirEscutas() {
   registrarListener("categorias", () =>
-    onSnapshot(collection(db, "categorias"), { includeMetadataChanges: true }, (snap) => {
+    onSnapshot(col("categorias"), { includeMetadataChanges: true }, (snap) => {
       STATE.categorias = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
         .filter((c) => c.ativa !== false)
         .sort((a, b) => (a.ordem ?? 99) - (b.ordem ?? 99) || String(a.nome).localeCompare(String(b.nome), "pt-BR"));
@@ -172,7 +276,7 @@ function abrirEscutas() {
   );
 
   registrarListener("rotinas", () =>
-    onSnapshot(collection(db, "rotinas"), { includeMetadataChanges: true }, (snap) => {
+    onSnapshot(col("rotinas"), { includeMetadataChanges: true }, (snap) => {
       STATE.rotinas = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
         .sort((a, b) => horaEmMinutos(a.hora) - horaEmMinutos(b.hora) || String(a.nome).localeCompare(String(b.nome), "pt-BR"));
       rastrearSincronizacao("rotinas", snap, (d) => d.nome);
@@ -187,7 +291,7 @@ function abrirEscutas() {
 
   // recorte 1: pendentes de qualquer data (é o que segura a atrasada no topo)
   registrarListener("tarefas-pendentes", () =>
-    onSnapshot(query(collection(db, "tarefas"), where("estado", "==", "pendente")),
+    onSnapshot(query(col("tarefas"), where("estado", "==", "pendente")),
       { includeMetadataChanges: true }, (snap) => {
         STATE.mapaPendentes = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
         rastrearSincronizacao("tarefas", snap, (d) => d.titulo);
@@ -197,7 +301,7 @@ function abrirEscutas() {
 
   // recorte 2: tudo dos últimos 90 dias (feitas de hoje, futuras, painel, histórico)
   registrarListener("tarefas-recentes", () =>
-    onSnapshot(query(collection(db, "tarefas"), where("data", ">=", somarDiasISO(STATE.hoje, -DIAS_JANELA))),
+    onSnapshot(query(col("tarefas"), where("data", ">=", somarDiasISO(STATE.hoje, -DIAS_JANELA))),
       { includeMetadataChanges: true }, (snap) => {
         STATE.mapaRecentes = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
         rastrearSincronizacao("tarefas", snap, (d) => d.titulo);
@@ -206,7 +310,7 @@ function abrirEscutas() {
   );
 
   registrarListener("perfil", () =>
-    onSnapshot(doc(db, "config", "perfil"), (snap) => {
+    onSnapshot(docRef("config", "perfil"), (snap) => {
       STATE.perfil = snap.exists() ? snap.data() : {};
       renderPerfil();
     }, erro)
@@ -232,7 +336,7 @@ function erro(err) {
 async function semearCategorias() {
   const batch = writeBatch(db);
   CATEGORIAS_INICIAIS.forEach((nome, i) => {
-    batch.set(doc(db, "categorias", slugId(nome)), {
+    batch.set(docRef("categorias", slugId(nome)), {
       nome, cor: CORES_CAT[i % CORES_CAT.length], ordem: i, ativa: true, createdAt: serverTimestamp(),
     });
   });
@@ -272,7 +376,7 @@ function tarefaDaAtividade(data, rotina, ativ) {
 async function materializar() {
   if (!STATE.rotinasCarregadas) return;
   const hoje = STATE.hoje;
-  const estadoRef = doc(db, "config", "estado");
+  const estadoRef = docRef("config", "estado");
 
   let ultima = null;
   try {
@@ -288,7 +392,7 @@ async function materializar() {
   // cima, senão uma tarefa já concluída voltaria pra pendente (crença 9)
   const existentes = new Set();
   try {
-    const qs = await getDocs(query(collection(db, "tarefas"), where("data", ">=", inicio)));
+    const qs = await getDocs(query(col("tarefas"), where("data", ">=", inicio)));
     qs.forEach((d) => existentes.add(d.id));
   } catch (err) { console.error(err); return; }
 
@@ -308,7 +412,7 @@ async function materializar() {
   // writeBatch aceita no máximo 500 operações, e a marca do dia ocupa uma
   for (let i = 0; i < novas.length; i += 450) {
     const batch = writeBatch(db);
-    novas.slice(i, i + 450).forEach(([id, dados]) => batch.set(doc(db, "tarefas", id), dados));
+    novas.slice(i, i + 450).forEach(([id, dados]) => batch.set(docRef("tarefas", id), dados));
     await emSegundoPlano(batch.commit(), "Não foi possível lançar as rotinas do dia.");
   }
   await emSegundoPlano(setDoc(estadoRef, { ultimaMaterializacao: hoje }, { merge: true }),
@@ -329,7 +433,7 @@ async function lancarProximosDias(dias) {
 
   const existentes = new Set();
   try {
-    const qs = await getDocs(query(collection(db, "tarefas"),
+    const qs = await getDocs(query(col("tarefas"),
       where("data", ">=", inicio), where("data", "<=", fim)));
     qs.forEach((d) => existentes.add(d.id));
   } catch (err) { console.error(err); return toast("Não foi possível conferir o que já está lançado.", "erro"); }
@@ -351,7 +455,7 @@ async function lancarProximosDias(dias) {
 
   for (let i = 0; i < novas.length; i += 450) {
     const batch = writeBatch(db);
-    novas.slice(i, i + 450).forEach(([id, dados]) => batch.set(doc(db, "tarefas", id), dados));
+    novas.slice(i, i + 450).forEach(([id, dados]) => batch.set(docRef("tarefas", id), dados));
     const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar as rotinas dos próximos dias.");
     if (!ok) return;
   }
@@ -369,7 +473,7 @@ async function lancarRotinaHoje(rotina) {
   for (const a of atividadesEfetivas(rotina)) {
     const id = idTarefaRotina(STATE.hoje, rotina.id, a.id);
     if (existentes.has(id)) continue;
-    batch.set(doc(db, "tarefas", id), tarefaDaAtividade(STATE.hoje, rotina, a));
+    batch.set(docRef("tarefas", id), tarefaDaAtividade(STATE.hoje, rotina, a));
     n++;
   }
   if (n) await emSegundoPlano(batch.commit(), "Não foi possível lançar a rotina de hoje.");
@@ -401,7 +505,7 @@ async function limparOrfasDaRotina(rotina) {
     if (t.agendaAtrasoId) await apagarEventosDe({ agendaAtrasoId: t.agendaAtrasoId });
   }
   const batch = writeBatch(db);
-  orfas.forEach((t) => batch.delete(doc(db, "tarefas", t.id)));
+  orfas.forEach((t) => batch.delete(docRef("tarefas", t.id)));
   await emSegundoPlano(batch.commit(), "Não foi possível limpar as tarefas antigas da rotina.");
 }
 
@@ -460,7 +564,7 @@ async function criarCategoriaRapida(nomeDigitado) {
   // hora pra selecionar a categoria recém-criada (crença 11)
   STATE.categorias = [...STATE.categorias, cat].sort((a, b) => (a.ordem ?? 99) - (b.ordem ?? 99) || a.nome.localeCompare(b.nome, "pt-BR"));
   await emSegundoPlano(
-    setDoc(doc(db, "categorias", id), { ...cat, createdAt: serverTimestamp() }, { merge: true }),
+    setDoc(docRef("categorias", id), { ...cat, createdAt: serverTimestamp() }, { merge: true }),
     "Não foi possível criar a categoria."
   );
   return cat;
@@ -750,7 +854,7 @@ async function alternarTarefa(id) {
   renderPainel();
 
   await emSegundoPlano(
-    updateDoc(doc(db, "tarefas", id), {
+    updateDoc(docRef("tarefas", id), {
       estado: virando ? "concluida" : "pendente",
       concluidaEm: virando ? serverTimestamp() : null,
     }),
@@ -771,7 +875,7 @@ async function descartarTarefa(id) {
   t.estado = "descartada";
   renderTudo();
   await emSegundoPlano(
-    updateDoc(doc(db, "tarefas", id), { estado: "descartada", descartadaEm: serverTimestamp() }),
+    updateDoc(docRef("tarefas", id), { estado: "descartada", descartadaEm: serverTimestamp() }),
     "Não foi possível descartar."
   );
   toast("Descartada. Ela fica no Histórico, no Painel.", "sucesso");
@@ -780,7 +884,7 @@ async function descartarTarefa(id) {
 
 async function restaurarTarefa(id) {
   await emSegundoPlano(
-    updateDoc(doc(db, "tarefas", id), { estado: "pendente", concluidaEm: null, descartadaEm: null }),
+    updateDoc(docRef("tarefas", id), { estado: "pendente", concluidaEm: null, descartadaEm: null }),
     "Não foi possível desfazer."
   );
   toast("Voltou pro checklist.", "sucesso");
@@ -793,7 +897,7 @@ async function excluirTarefa(id) {
   const ok = await confirmar(`Excluir "${t.titulo}" de vez? Isso não dá pra desfazer.`);
   if (!ok) return;
   await apagarEventosDe({ agendaEventoId: t.agendaEventoId, agendaAtrasoId: t.agendaAtrasoId });
-  await emSegundoPlano(deleteDoc(doc(db, "tarefas", id)), "Não foi possível excluir.");
+  await emSegundoPlano(deleteDoc(docRef("tarefas", id)), "Não foi possível excluir.");
   toast("Tarefa excluída.", "sucesso");
 }
 
@@ -857,13 +961,13 @@ function modalTarefa(tarefa) {
 
     if (editando) {
       await emSegundoPlano(
-        updateDoc(doc(db, "tarefas", tarefa.id), { titulo, data, hora, duracaoMin, categoriaId }),
+        updateDoc(docRef("tarefas", tarefa.id), { titulo, data, hora, duracaoMin, categoriaId }),
         "Não foi possível salvar a tarefa."
       );
       toast("Tarefa atualizada.", "sucesso");
     } else {
       await emSegundoPlano(
-        setDoc(doc(db, "tarefas", `m-${gerarId()}`), {
+        setDoc(docRef("tarefas", `m-${gerarId()}`), {
           data, hora, duracaoMin, titulo, categoriaId,
           estado: "pendente", origem: "manual",
           rotinaId: null, rotinaAtividadeId: null, rotinaNome: null,
@@ -1271,7 +1375,7 @@ function modalRotina(rotina) {
 
     fecharModal();
     const ok = await emSegundoPlano(
-      setDoc(doc(db, "rotinas", id), dados, { merge: true }),
+      setDoc(docRef("rotinas", id), dados, { merge: true }),
       "Não foi possível salvar a rotina."
     );
     if (!ok) return;
@@ -1290,7 +1394,7 @@ async function alternarRotinaAtiva(id) {
   if (!r) return;
   const ativa = !r.ativa;
   const atualizada = { ...r, ativa };
-  const ok = await emSegundoPlano(updateDoc(doc(db, "rotinas", id), { ativa }), "Não foi possível atualizar a rotina.");
+  const ok = await emSegundoPlano(updateDoc(docRef("rotinas", id), { ativa }), "Não foi possível atualizar a rotina.");
   if (!ok) return;
   await limparOrfasDaRotina(atualizada);
   await lancarRotinaHoje(atualizada);
@@ -1314,10 +1418,10 @@ async function excluirRotina(id) {
   const orfas = STATE.tarefas.filter((t) => t.rotinaId === id && t.estado === "pendente");
   for (let i = 0; i < orfas.length; i += 450) {
     const batch = writeBatch(db);
-    orfas.slice(i, i + 450).forEach((t) => batch.delete(doc(db, "tarefas", t.id)));
+    orfas.slice(i, i + 450).forEach((t) => batch.delete(docRef("tarefas", t.id)));
     await emSegundoPlano(batch.commit(), "Não foi possível limpar as tarefas da rotina.");
   }
-  await emSegundoPlano(deleteDoc(doc(db, "rotinas", id)), "Não foi possível excluir a rotina.");
+  await emSegundoPlano(deleteDoc(docRef("rotinas", id)), "Não foi possível excluir a rotina.");
   toast("Rotina excluída.", "sucesso");
 }
 
@@ -1396,7 +1500,7 @@ function modalPerfil() {
       ocupacao: corpo.querySelector("#p-ocup").value.trim(),
     };
     fecharModal();
-    await emSegundoPlano(setDoc(doc(db, "config", "perfil"), dados, { merge: true }),
+    await emSegundoPlano(setDoc(docRef("config", "perfil"), dados, { merge: true }),
       "Não foi possível salvar seus dados.");
     toast("Dados salvos.", "sucesso");
   });
@@ -1505,12 +1609,12 @@ function modalCategorias() {
         if (!nome) return;
         const id = c.id || slugId(nome) || `c-${gerarId()}`;
         mantidos.add(id);
-        batch.set(doc(db, "categorias", id), { nome, cor: c.cor, ordem: i, ativa: true }, { merge: true });
+        batch.set(docRef("categorias", id), { nome, cor: c.cor, ordem: i, ativa: true }, { merge: true });
       });
       // remover da lista é desativar, nunca apagar: o histórico ainda precisa
       // resolver o nome da categoria (crença 32)
       STATE.categorias.forEach((c) => {
-        if (!mantidos.has(c.id)) batch.set(doc(db, "categorias", c.id), { ativa: false }, { merge: true });
+        if (!mantidos.has(c.id)) batch.set(docRef("categorias", c.id), { ativa: false }, { merge: true });
       });
       fecharModal();
       await emSegundoPlano(batch.commit(), "Não foi possível salvar as categorias.");
@@ -1609,7 +1713,7 @@ function modalAgenda() {
     fecharModal();
     if (!conectada && !(await conectarAgenda())) return;
     await sincronizarAgenda({
-      rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, silencioso: false,
+      rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, email: emailDono(), silencioso: false,
     });
   });
 }
@@ -1680,8 +1784,11 @@ let timerSinc = null;
 function agendarSincronizacao() {
   clearTimeout(timerSinc);
   timerSinc = setTimeout(() => {
+    // o timer pode disparar depois de sair da conta; sem dono não há espaço
+    // pra escrever, e montar o caminho com e-mail vazio estouraria
+    if (!emailDono()) return;
     sincronizarAgenda({
-      rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, silencioso: true,
+      rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, email: emailDono(), silencioso: true,
     });
   }, 2500);
 }

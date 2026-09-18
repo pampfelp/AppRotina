@@ -29,7 +29,22 @@
 */
 
 const FIREBASE_PROJECT_ID = "approtina-54752";
+
+/*
+  De quem é o espaço que este script sincroniza. Desde 2026-09-18 cada
+  pessoa tem o próprio (`usuarios/{email}/...`), e este script escreve na
+  agenda de quem AUTORIZOU ele — então os dois precisam ser a mesma pessoa.
+  Se sua mulher quiser a agenda dela sincronizando sozinha, ela instala uma
+  cópia deste script na conta Google dela, com o e-mail dela aqui.
+*/
+const EMAIL_DONO = "felipecastiged@gmail.com";
+
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
+// e-mail cru no caminho, sem encodeURIComponent: "@" e "." são caracteres
+// legais num segmento de URL, e mandar "%40" dependeria de a API decodificar
+// do jeito esperado — se não decodificasse, o script leria um espaço vazio e
+// diria "nada a fazer", que é a falha calada mais cara de achar
+const ESPACO = `${FIRESTORE_BASE}/usuarios/${EMAIL_DONO.toLowerCase()}`;
 const DIAS_JANELA = 90;     // mesmo recorte de tarefas recentes que o app usa
 const DIAS_COBRANCA = 14;   // tamanho da série diária de atrasada
 const TZ = "America/Sao_Paulo";
@@ -361,7 +376,7 @@ function fsListAll_(colecao) {
   const docs = [];
   let pageToken = "";
   do {
-    const url = `${FIRESTORE_BASE}/${colecao}?pageSize=300${pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""}`;
+    const url = `${ESPACO}/${colecao}?pageSize=300${pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""}`;
     const resp = fsFetch_(url);
     (resp.documents || []).forEach((d) => docs.push(fsDocParaObjeto_(d)));
     pageToken = resp.nextPageToken || "";
@@ -379,7 +394,7 @@ function fsRunQuery_(colecao, campo, operador, valor) {
       where: { fieldFilter: { field: { fieldPath: campo }, op: operador, value: paraValorFirestore_(valor) } },
     },
   };
-  const resp = fsFetch_(`${FIRESTORE_BASE}:runQuery`, { method: "post", payload: body });
+  const resp = fsFetch_(`${ESPACO}:runQuery`, { method: "post", payload: body });
   return (Array.isArray(resp) ? resp : [])
     .filter((r) => r.document)
     .map((r) => fsDocParaObjeto_(r.document));
@@ -401,7 +416,7 @@ function fsPatch_(colecao, id, campos) {
   const fields = {};
   Object.keys(campos).forEach((k) => { fields[k] = paraValorFirestore_(campos[k]); });
   const mask = Object.keys(campos).map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join("&");
-  fsFetch_(`${FIRESTORE_BASE}/${colecao}/${id}?${mask}`, { method: "patch", payload: { fields } });
+  fsFetch_(`${ESPACO}/${colecao}/${id}?${mask}`, { method: "patch", payload: { fields } });
 }
 
 function fsDocParaObjeto_(doc) {

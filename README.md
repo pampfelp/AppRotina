@@ -271,13 +271,46 @@ a ser recusada** com `permission-denied`.
 É o passo 4 de novo: console do Firebase → Firestore Database → aba Regras →
 apagar o conteúdo → colar o `firestore.rules` deste repositório → Publicar.
 
-**Republique de novo em 2026-09-18.** Rotina ganhou uma categoria própria
-obrigatória (`categoriaId`) — é ela que a rotina usa quando não tem nenhuma
-atividade cadastrada, porque nesse caso a rotina é a própria atividade. As
-regras agora exigem esse campo. **Rotina criada antes disso não tem esse
-campo gravado**, e qualquer gravação nela (inclusive só pausar/reativar pelo
-botão rápido) vai ser recusada até você abrir essa rotina, escolher uma
-categoria e salvar uma vez.
+**Republique de novo em 2026-09-18.** Duas mudanças exigem regras novas:
+
+1. Rotina ganhou uma categoria própria obrigatória (`categoriaId`) — é ela
+   que a rotina usa quando não tem nenhuma atividade cadastrada, porque
+   nesse caso a rotina é a própria atividade. **Rotina criada antes disso
+   não tem esse campo gravado**, e qualquer gravação nela (inclusive só
+   pausar/reativar pelo botão rápido) vai ser recusada até você abrir essa
+   rotina, escolher uma categoria e salvar uma vez.
+2. Cada conta passou a ter o próprio espaço (veja a seção abaixo). Seus
+   dados antigos são movidos sozinhos no primeiro login depois disso.
+
+---
+
+## Mais de uma pessoa usando
+
+Cada conta tem o próprio espaço em `usuarios/{email}/...`: rotinas,
+tarefas, categorias e perfil separados, e uma conta nunca enxerga a outra.
+Quem decide isso é o caminho do documento, não um campo dentro dele — então
+não existe jeito de uma gravação "se passar" por outro dono.
+
+**Pra liberar alguém**, o e-mail precisa entrar nas DUAS listas:
+
+1. `EMAILS_AUTORIZADOS` em `firebase-init.js`;
+2. a lista da função `autorizado()` em `firestore.rules` (e republicar as
+   regras no console).
+
+Faltando numa das duas, o sintoma é mudo: a pessoa entra e o app fica vazio,
+ou ela leva "conta não autorizada" sem explicação. A lista existe pra que uma
+conta Google qualquer não crie espaço no seu projeto e gaste a mesma cota
+gratuita.
+
+**O Google Agenda é individual.** O Apps Script escreve na agenda de quem
+autorizou ele. Pra segunda pessoa ter a agenda dela sincronizando sozinha,
+ela instala uma cópia do script na conta Google dela, trocando `EMAIL_DONO`
+pelo e-mail dela — passo a passo em
+[`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md).
+
+**Link aberto de dentro do WhatsApp não loga com Google.** O WhatsApp abre
+num navegador embutido, e o Google recusa login OAuth nesse tipo de janela.
+Copie o link e cole no Chrome ou no Safari de verdade antes de entrar.
 
 ---
 
