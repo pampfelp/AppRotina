@@ -85,29 +85,47 @@ function sincronizarAgendaAppRotina() {
 function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
   let ops = 0;
   rotinas.forEach((r) => {
-    // rotina sem atividade cadastrada não é mais "sem conteúdo": ela é a
-    // própria atividade agora, então só sai da agenda se pausada ou sem dia
-    const semConteudo = !r.ativa || !(r.diasSemana || []).length;
+    try {
+      // rotina sem atividade cadastrada não é mais "sem conteúdo": ela é a
+      // própria atividade agora, então só sai da agenda se pausada ou sem dia
+      const semConteudo = !r.ativa || !(r.diasSemana || []).length;
 
-    if (semConteudo) {
-      if (r.agendaEventoId) {
-        apagarSerieSeExistir_(cal, r.agendaEventoId);
-        fsPatch_("rotinas", r.__id, { agendaEventoId: null, agendaHash: null });
-        ops++;
+      if (semConteudo) {
+        if (r.agendaEventoId) {
+          apagarSerieSeExistir_(cal, r.agendaEventoId);
+          fsPatch_("rotinas", r.__id, { agendaEventoId: null, agendaHash: null });
+          ops++;
+        }
+        return;
       }
-      return;
+
+      const hash = assinaturaRotina_(r);
+      if (r.agendaEventoId && r.agendaHash === hash) return;
+
+      // recriar em vez de editar: o CalendarApp não tem como mudar horário ou
+      // regra de recorrência de uma série já criada, só apagar e criar de novo
+      if (r.agendaEventoId) apagarSerieSeExistir_(cal, r.agendaEventoId);
+      const ev = eventoDaRotina_(r, nomeCategoria);
+      const novoId = criarSerieSemanal_(cal, ev);
+      /*
+        Grava o id ANTES de contar sucesso. Se fsPatch_ falhar aqui, a série
+        já nasceu no Calendar e ninguém vai saber o id dela — a rodada
+        seguinte, 15 minutos depois, acharia que a rotina não tem evento e
+        criaria outra. Mesmo mecanismo do agenda.js (antecipacao.md E9):
+        efeito externo sem registro vira duplicata por rodada. Por isso o
+        try/catch desfaz a série recém-criada antes de propagar o erro.
+      */
+      try {
+        fsPatch_("rotinas", r.__id, { agendaEventoId: novoId, agendaHash: hash });
+      } catch (errPatch) {
+        apagarSerieSeExistir_(cal, novoId);
+        throw errPatch;
+      }
+      ops++;
+    } catch (err) {
+      // uma rotina com problema não pode travar as outras — loga e segue
+      Logger.log("AppRotina: falhou a rotina %s (%s) — %s", r.__id, r.nome, err);
     }
-
-    const hash = assinaturaRotina_(r);
-    if (r.agendaEventoId && r.agendaHash === hash) return;
-
-    // recriar em vez de editar: o CalendarApp não tem como mudar horário ou
-    // regra de recorrência de uma série já criada, só apagar e criar de novo
-    if (r.agendaEventoId) apagarSerieSeExistir_(cal, r.agendaEventoId);
-    const ev = eventoDaRotina_(r, nomeCategoria);
-    const novoId = criarSerieSemanal_(cal, ev);
-    fsPatch_("rotinas", r.__id, { agendaEventoId: novoId, agendaHash: hash });
-    ops++;
   });
   return ops;
 }
@@ -157,31 +175,42 @@ function criarSerieSemanal_(cal, ev) {
 function sincronizarTarefasAvulsas_(cal, tarefas, nomeCategoria, hoje) {
   let ops = 0;
   tarefas.forEach((t) => {
-    if (t.origem !== "manual") return; // vinda de rotina já está coberta pelo recorrente
+    try {
+      if (t.origem !== "manual") return; // vinda de rotina já está coberta pelo recorrente
 
-    // descartada: o compromisso deixou de existir, sai da agenda
-    if (t.estado === "descartada") {
-      if (t.agendaEventoId) {
-        apagarEventoSeExistir_(cal, t.agendaEventoId);
-        fsPatch_("tarefas", t.__id, { agendaEventoId: null, agendaHash: null });
-        ops++;
+      // descartada: o compromisso deixou de existir, sai da agenda
+      if (t.estado === "descartada") {
+        if (t.agendaEventoId) {
+          apagarEventoSeExistir_(cal, t.agendaEventoId);
+          fsPatch_("tarefas", t.__id, { agendaEventoId: null, agendaHash: null });
+          ops++;
+        }
+        return;
       }
-      return;
+
+      if (t.data < hoje && !t.agendaEventoId) return; // passado nunca sincronizado, ignora
+
+      const hash = assinaturaTarefa_(t);
+      if (t.agendaEventoId && t.agendaHash === hash) return;
+
+      if (t.agendaEventoId) apagarEventoSeExistir_(cal, t.agendaEventoId);
+      const ev = eventoDaTarefa_(t, nomeCategoria);
+      const evento = cal.createEvent(ev.titulo, ev.inicio, ev.fim, { description: ev.descricao });
+      evento.removeAllReminders();
+      evento.addPopupReminder(0);
+      evento.addPopupReminder(10);
+      // mesmo cuidado de sincronizarRotinas_: desfaz o evento se não
+      // conseguir gravar o id, senão vira duplicata na rodada seguinte
+      try {
+        fsPatch_("tarefas", t.__id, { agendaEventoId: evento.getId(), agendaHash: hash });
+      } catch (errPatch) {
+        apagarEventoSeExistir_(cal, evento.getId());
+        throw errPatch;
+      }
+      ops++;
+    } catch (err) {
+      Logger.log("AppRotina: falhou a tarefa avulsa %s (%s) — %s", t.__id, t.titulo, err);
     }
-
-    if (t.data < hoje && !t.agendaEventoId) return; // passado nunca sincronizado, ignora
-
-    const hash = assinaturaTarefa_(t);
-    if (t.agendaEventoId && t.agendaHash === hash) return;
-
-    if (t.agendaEventoId) apagarEventoSeExistir_(cal, t.agendaEventoId);
-    const ev = eventoDaTarefa_(t, nomeCategoria);
-    const evento = cal.createEvent(ev.titulo, ev.inicio, ev.fim, { description: ev.descricao });
-    evento.removeAllReminders();
-    evento.addPopupReminder(0);
-    evento.addPopupReminder(10);
-    fsPatch_("tarefas", t.__id, { agendaEventoId: evento.getId(), agendaHash: hash });
-    ops++;
   });
   return ops;
 }
@@ -202,29 +231,39 @@ function eventoDaTarefa_(t, nomeCategoria) {
 function sincronizarAtrasadas_(cal, tarefas, nomeCategoria, hoje) {
   let ops = 0;
   tarefas.forEach((t) => {
-    const atrasada = t.estado === "pendente" && t.data < hoje;
+    try {
+      const atrasada = t.estado === "pendente" && t.data < hoje;
 
-    if (!atrasada) {
-      if (t.agendaAtrasoId) {
-        apagarSerieSeExistir_(cal, t.agendaAtrasoId);
-        fsPatch_("tarefas", t.__id, { agendaAtrasoId: null, agendaAtrasoAte: null });
-        ops++;
+      if (!atrasada) {
+        if (t.agendaAtrasoId) {
+          apagarSerieSeExistir_(cal, t.agendaAtrasoId);
+          fsPatch_("tarefas", t.__id, { agendaAtrasoId: null, agendaAtrasoAte: null });
+          ops++;
+        }
+        return;
       }
-      return;
+
+      // série ainda cobrindo os próximos dias: nada a fazer
+      if (t.agendaAtrasoId && t.agendaAtrasoAte && t.agendaAtrasoAte >= hoje) return;
+
+      if (t.agendaAtrasoId) apagarSerieSeExistir_(cal, t.agendaAtrasoId);
+      const ev = eventoDeAtraso_(t, nomeCategoria, hoje);
+      const recorrencia = CalendarApp.newRecurrence().addDailyRule().times(DIAS_COBRANCA);
+      const serie = cal.createEventSeries(ev.titulo, ev.inicio, ev.fim, recorrencia);
+      serie.setDescription(ev.descricao);
+      serie.removeAllReminders();
+      serie.addPopupReminder(0);
+      // mesmo cuidado das duas funções acima: desfaz se não conseguir gravar
+      try {
+        fsPatch_("tarefas", t.__id, { agendaAtrasoId: serie.getId(), agendaAtrasoAte: ev.cobreAte });
+      } catch (errPatch) {
+        apagarSerieSeExistir_(cal, serie.getId());
+        throw errPatch;
+      }
+      ops++;
+    } catch (err) {
+      Logger.log("AppRotina: falhou a cobrança da tarefa %s (%s) — %s", t.__id, t.titulo, err);
     }
-
-    // série ainda cobrindo os próximos dias: nada a fazer
-    if (t.agendaAtrasoId && t.agendaAtrasoAte && t.agendaAtrasoAte >= hoje) return;
-
-    if (t.agendaAtrasoId) apagarSerieSeExistir_(cal, t.agendaAtrasoId);
-    const ev = eventoDeAtraso_(t, nomeCategoria, hoje);
-    const recorrencia = CalendarApp.newRecurrence().addDailyRule().times(DIAS_COBRANCA);
-    const serie = cal.createEventSeries(ev.titulo, ev.inicio, ev.fim, recorrencia);
-    serie.setDescription(ev.descricao);
-    serie.removeAllReminders();
-    serie.addPopupReminder(0);
-    fsPatch_("tarefas", t.__id, { agendaAtrasoId: serie.getId(), agendaAtrasoAte: ev.cobreAte });
-    ops++;
   });
   return ops;
 }

@@ -370,7 +370,31 @@ function assinaturaRotina(r) {
 export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silencioso = true }) {
   if (sincronizando) return;
   if (!agendaConfigurada()) return;
-  const t = await garantirToken();
+
+  /*
+    CORRIGIDO EM 2026-09-18. A sincronização AUTOMÁTICA (silencioso:true —
+    disparada 2,5s depois de criar/editar tarefa, ou ao abrir o app) nunca
+    tenta arrumar token sozinha. Só usa o que já está vivo na memória desta
+    aba (uma conexão feita nesta mesma sessão, ainda dentro da hora).
+
+    Por quê: pedirToken({silencioso:true}) deveria falhar calado quando não
+    consegue renovar sem interação (`prompt:''` é documentado assim pelo
+    Google), mas na prática, com cookie de terceiro bloqueado — o padrão no
+    Safari, e cada vez mais comum no Chrome — o GIS às vezes mostra a tela
+    de escolher conta mesmo com prompt vazio, contrariando a própria
+    documentação. E como `token` é variável em memória, ela reseta a cada
+    F5: a tentativa de renovar rodava de novo em TODA abertura fresca do
+    app, não só de hora em hora. Ele reportou (2026-09-18): "sempre que eu
+    crio uma atividade avulsa ele diz enviado pro Google Agenda, daí pede
+    pra logar de novo" — batia exatamente com isso.
+
+    Sem tentar renovar, a automática ou aproveita um token já vivo (grátis,
+    sem risco) ou desiste na hora, sem popup nenhum. O que fecha a lacuna é
+    o gatilho do Apps Script (apps-script/, a cada 15 min, sem navegador,
+    sem popup — mesmo caminho que a Jornada do Milhão já usa) e o clique
+    de propósito em "Sincronizar agora", que continua podendo pedir login.
+  */
+  const t = silencioso ? (agendaConectada() ? token.valor : null) : await garantirToken();
   if (!t) {
     DIAG.faltouToken = true;
     if (!silencioso) {
@@ -379,7 +403,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silen
       // Avisa UMA vez por sessão. Sem isso a sincronização falhava calada e
       // a única forma de descobrir era comparar com o Google Agenda na mão.
       avisouTokenNaSessao = true;
-      toast("O Google Agenda não está conectado, nada está sendo lançado lá. Perfil › Configurações › Google Agenda.", "erro", 9000);
+      toast("O Google Agenda não sincronizou agora. Se você instalou o gatilho do Apps Script, ele resolve sozinho em até 15 min — senão, Perfil › Configurações › Google Agenda › Sincronizar agora.", "info", 10000);
     }
     avisar();
     return;

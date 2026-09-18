@@ -15,17 +15,17 @@
 */
 
 const PREFIXO = "rot-";
-const CACHE_NAME = `${PREFIXO}v7`; // sobe a cada mudança relevante de asset
+const CACHE_NAME = `${PREFIXO}v8`; // sobe a cada mudança relevante de asset
 const SHELL = [
   "./",
   "./index.html",
-  "./style.css?v=7",
-  "./app.js?v=7",
+  "./style.css?v=8",
+  "./app.js?v=8",
   "./shared.js",
   "./auth.js",
   "./agenda.js",
   "./firebase-init.js",
-  "./manifest.json?v=7",
+  "./manifest.json?v=8",
 ];
 
 self.addEventListener("install", (e) => {

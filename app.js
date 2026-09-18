@@ -1738,9 +1738,20 @@ function modalAgenda() {
      ${d.configurada && !conectada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Não conectado. Enquanto estiver assim, <strong>nada</strong> é lançado
-        na sua agenda, e o app não tem como avisar disso sozinho.</span>
+        <span>Não conectado neste navegador. Enquanto estiver assim, tarefa criada
+        aqui só chega na agenda quando o gatilho do Apps Script rodar (veja abaixo),
+        ou quando você clicar em "Conectar".</span>
       </div>` : ""}
+     <div class="aviso info">
+       <span class="ico">${ICONS.info}</span>
+       <span><strong>Recomendado: instalar o gatilho do Apps Script.</strong> Ele
+       roda a cada 15 minutos na nuvem do Google, com o app fechado, sem pedir
+       login — é o mesmo jeito que a Jornada do Milhão já usa. Sem ele, este
+       navegador tenta sincronizar sozinho quando dá, mas o token do Google
+       expira de hora em hora e às vezes pede login de novo em vez de renovar
+       calado. Passo a passo em <code>apps-script/LEIA-ME.md</code>, no
+       repositório — uns 5 minutos, só você consegue fazer.</span>
+     </div>
      ${d.ultimoErro ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
@@ -1786,8 +1797,9 @@ function modalAgenda() {
        apaga esse evento, porque ele é registro do que aconteceu; descartar apaga.<br>
        <strong>Atrasada</strong> vira uma série diária de 14 dias no horário original,
        e essa para de cobrar quando você conclui ou descarta.<br><br>
-       O que depende de você abrir o app: uma tarefa que vence num dia em que você
-       nunca abriu ganha a cobrança só na próxima abertura.</span>
+       Com o gatilho do Apps Script instalado, tudo isso acontece sozinho, mesmo
+       com o app fechado. Sem ele, depende de abrir o app (ou clicar em
+       "Sincronizar agora") pra empurrar o que mudou.</span>
      </div>`,
     `${conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
      <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`

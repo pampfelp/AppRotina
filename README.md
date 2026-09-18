@@ -39,6 +39,17 @@ como feita, e aí o ranking passaria a mentir.
 
 ### Google Agenda
 
+**Dois caminhos, use os dois.** O navegador sincroniza sozinho quando o app
+está aberto (bom pra ver o efeito na hora), mas o token do Google que ele usa
+expira de hora em hora e só renova sozinho quando o navegador deixa — o que
+nem sempre acontece, e aí ele pede login de novo. O caminho que resolve de
+vez é o gatilho do **Apps Script** (pasta `apps-script/`, passo a passo em
+[`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md)): roda a cada 15 minutos
+na nuvem do Google, com o app fechado, sem popup — é o mesmo jeito que a
+Jornada do Milhão já usa. Uns 5 minutos pra instalar, só você consegue
+clicar. Sem ele, o app continua funcionando, só depende de você abrir ele
+(ou clicar em "Sincronizar agora") pra empurrar o que mudou pra agenda.
+
 - Rotina ativa vira **um evento recorrente semanal**. Criado uma vez, notifica
   pra sempre, mesmo com o app fechado.
 - Tarefa avulsa de hoje em diante vira **um evento no horário dela**, com a
@@ -301,6 +312,26 @@ nenhuma conta existente quebra — só quem quiser trocar a cor em **Perfil ›
 Cor do app** precisa das regras novas publicadas antes de a escolha
 persistir. Sem republicar, a cor troca na hora mas o Firestore recusa
 salvar, e ela volta ao verde no próximo F5 (o app avisa disso no toast).
+
+**Nada a republicar em 2026-09-18 (o Google Agenda parou de pedir login
+sozinho).** Criar uma tarefa avulsa disparava, alguns segundos depois, uma
+tentativa automática de renovar o token do Google — e em navegador com
+cookie de terceiro bloqueado (comum), essa tentativa "silenciosa" às vezes
+mostrava a tela de escolher conta em vez de falhar calada, contrariando a
+própria documentação do Google. Isso é só código, sem campo novo nas
+regras. Se você **ainda não instalou** o gatilho do Apps Script
+(`apps-script/LEIA-ME.md`), vale a pena agora: ele resolve de vez, é o
+mesmo caminho que a Jornada do Milhão já usa, e sem ele o app continua
+funcionando, só depende de você abrir ele pra empurrar o que mudou pra
+agenda.
+
+Se atualizou o `apps-script/Code.gs` de uma versão anterior a hoje:
+reimplante. **Extensões** → **Apps Script** → cole o `Code.gs` novo por
+cima do antigo → **Implantar** → **Gerenciar implantações** → ícone de
+lápis na implantação existente → **Nova versão** → **Implantar**. A versão
+antiga tinha o mesmo risco de duplicata que o navegador tinha (evento
+criado no Calendar, gravação do id no Firestore falha, próxima rodada cria
+outro) — corrigido junto.
 
 ---
 
