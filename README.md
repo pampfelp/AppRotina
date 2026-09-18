@@ -39,6 +39,17 @@ como feita, e aí o ranking passaria a mentir.
 
 ### Google Agenda
 
+**Dois caminhos, use os dois.** O navegador sincroniza sozinho quando o app
+está aberto (bom pra ver o efeito na hora), mas o token do Google que ele usa
+expira de hora em hora e só renova sozinho quando o navegador deixa — o que
+nem sempre acontece, e aí ele pede login de novo. O caminho que resolve de
+vez é o gatilho do **Apps Script** (pasta `apps-script/`, passo a passo em
+[`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md)): roda a cada 15 minutos
+na nuvem do Google, com o app fechado, sem popup — é o mesmo jeito que a
+Jornada do Milhão já usa. Uns 5 minutos pra instalar, só você consegue
+clicar. Sem ele, o app continua funcionando, só depende de você abrir ele
+(ou clicar em "Sincronizar agora") pra empurrar o que mudou pra agenda.
+
 - Rotina ativa vira **um evento recorrente semanal**. Criado uma vez, notifica
   pra sempre, mesmo com o app fechado.
 - Tarefa avulsa de hoje em diante vira **um evento no horário dela**, com a
@@ -271,25 +282,71 @@ a ser recusada** com `permission-denied`.
 É o passo 4 de novo: console do Firebase → Firestore Database → aba Regras →
 apagar o conteúdo → colar o `firestore.rules` deste repositório → Publicar.
 
-**Republique de novo em 2026-09-18.** Duas mudanças exigem regras novas:
+**Republique de novo em 2026-09-18.** Rotina ganhou uma categoria própria
+(`categoriaId`) — é ela que a rotina usa quando não tem nenhuma atividade
+cadastrada, porque nesse caso a rotina é a própria atividade.
 
-1. Rotina ganhou uma categoria própria obrigatória (`categoriaId`) — é ela
-   que a rotina usa quando não tem nenhuma atividade cadastrada, porque
-   nesse caso a rotina é a própria atividade. **Rotina criada antes disso
-   não tem esse campo gravado**, e qualquer gravação nela (inclusive só
-   pausar/reativar pelo botão rápido) vai ser recusada até você abrir essa
-   rotina, escolher uma categoria e salvar uma vez.
-2. Cada conta passou a ter o próprio espaço (veja a seção abaixo). Seus
-   dados antigos são movidos sozinhos no primeiro login depois disso.
+O campo é **aceito ausente** nas regras, de propósito: exigir ele quebraria
+toda rotina criada antes dessa data. Rotina antiga continua sendo gravada,
+pausada e reativada normalmente sem o campo; ela só não entra no ranking do
+Painel por categoria até você abrir, escolher uma e salvar uma vez — nada
+urgente, é cosmético.
+
+**Republique de novo em 2026-09-17 (a correção do login).** O login mudou
+de `getAuth()` simples para `initializeAuth()` com uma cadeia de
+persistência explícita (IndexedDB → localStorage → sessão), pra corrigir o
+F5 pedindo pra escolher a conta do Google de novo. Isso é só código, sem
+campo novo — **não precisa republicar as regras por causa dessa parte**,
+só as duas acima se ainda não tiver feito.
+
+Se depois de atualizar o F5 ainda pedir login: abra **Perfil › ☰ ›
+Sobre o app** e veja a linha "Sessão salva em". Se disser "somente esta
+aba", o navegador (ou uma extensão) está bloqueando armazenamento
+persistente — o remédio nesse caso é fora do app: conferir se há navegação
+privada ativa, ou desativar a extensão de privacidade/bloqueio de cookies
+pra este site.
+
+**Republique de novo em 2026-09-18 (cor personalizável).** `config/perfil`
+ganhou o campo `corTema`. Mesma regra de sempre: aceito ausente, então
+nenhuma conta existente quebra — só quem quiser trocar a cor em **Perfil ›
+Cor do app** precisa das regras novas publicadas antes de a escolha
+persistir. Sem republicar, a cor troca na hora mas o Firestore recusa
+salvar, e ela volta ao verde no próximo F5 (o app avisa disso no toast).
+
+**Nada a republicar em 2026-09-18 (o Google Agenda parou de pedir login
+sozinho).** Criar uma tarefa avulsa disparava, alguns segundos depois, uma
+tentativa automática de renovar o token do Google — e em navegador com
+cookie de terceiro bloqueado (comum), essa tentativa "silenciosa" às vezes
+mostrava a tela de escolher conta em vez de falhar calada, contrariando a
+própria documentação do Google. Isso é só código, sem campo novo nas
+regras. Se você **ainda não instalou** o gatilho do Apps Script
+(`apps-script/LEIA-ME.md`), vale a pena agora: ele resolve de vez, é o
+mesmo caminho que a Jornada do Milhão já usa, e sem ele o app continua
+funcionando, só depende de você abrir ele pra empurrar o que mudou pra
+agenda.
+
+Se atualizou o `apps-script/Code.gs` de uma versão anterior a hoje:
+reimplante. **Extensões** → **Apps Script** → cole o `Code.gs` novo por
+cima do antigo → **Implantar** → **Gerenciar implantações** → ícone de
+lápis na implantação existente → **Nova versão** → **Implantar**. A versão
+antiga tinha o mesmo risco de duplicata que o navegador tinha (evento
+criado no Calendar, gravação do id no Firestore falha, próxima rodada cria
+outro) — corrigido junto.
+
+**Republique de novo em 2026-09-18 (um espaço por pessoa).** As regras
+inteiras mudaram de forma: cada conta agora vive em `usuarios/{email}/...`
+em vez de coleções na raiz. Sem republicar, o app abre vazio e recusa toda
+gravação. Seus dados antigos são movidos sozinhos, uma única vez, no
+primeiro login depois dessa atualização — o app avisa em tela enquanto move.
 
 ---
 
 ## Mais de uma pessoa usando
 
-Cada conta tem o próprio espaço em `usuarios/{email}/...`: rotinas,
-tarefas, categorias e perfil separados, e uma conta nunca enxerga a outra.
-Quem decide isso é o caminho do documento, não um campo dentro dele — então
-não existe jeito de uma gravação "se passar" por outro dono.
+Cada conta tem o próprio espaço em `usuarios/{email}/...`: rotinas, tarefas,
+categorias e perfil separados, e uma conta nunca enxerga a outra. Quem
+decide isso é o caminho do documento, não um campo dentro dele — então não
+existe gravação capaz de "se passar" por outro dono.
 
 **Pra liberar alguém**, o e-mail precisa entrar nas DUAS listas:
 
@@ -297,8 +354,8 @@ não existe jeito de uma gravação "se passar" por outro dono.
 2. a lista da função `autorizado()` em `firestore.rules` (e republicar as
    regras no console).
 
-Faltando numa das duas, o sintoma é mudo: a pessoa entra e o app fica vazio,
-ou ela leva "conta não autorizada" sem explicação. A lista existe pra que uma
+Faltando numa das duas, o sintoma é mudo: a pessoa leva "conta não
+autorizada", ou entra e encontra o app vazio. A lista existe pra que uma
 conta Google qualquer não crie espaço no seu projeto e gaste a mesma cota
 gratuita.
 

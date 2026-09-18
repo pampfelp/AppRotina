@@ -192,13 +192,60 @@ async function chamar(metodo, caminho, corpo) {
   if (res.status === 404 || res.status === 410) return { ausente: true };
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    throw new Error(`calendar ${res.status}: ${txt.slice(0, 180)}`);
+    const e = new Error(`Google Agenda ${res.status}: ${txt.slice(0, 180)}`);
+    e.origem = "calendar";
+    throw e;
   }
   if (res.status === 204) return {};
   return await res.json();
 }
 
 const criarEvento = (ev) => chamar("POST", "", ev);
+
+/*
+  Grava no Firestore marcando de onde veio o erro. Sem isso a mensagem
+  culpava o lado errado: em 2026-09-17 a tela dizia "a agenda recusou 2
+  evento(s)" quando quem recusou foi o Firestore ("Missing or insufficient
+  permissions"), e o Felipe foi procurar o problema no OAuth do Google em vez
+  de nas firestore.rules.
+*/
+async function gravar(ref, dados) {
+  try {
+    await updateDoc(ref, dados);
+  } catch (err) {
+    const e = new Error(`Firestore: ${err?.message || err}`);
+    e.origem = "firestore";
+    e.code = err?.code;
+    throw e;
+  }
+}
+
+/*
+  Cria o evento e registra o id. Se o registro falhar, APAGA o evento que
+  acabou de nascer.
+
+  Por que isso é obrigatório: sem o id gravado, a próxima sincronização acha
+  que a rotina não tem evento e cria outro, e outro, uma duplicata por
+  abertura do app. Foi o que aconteceu em 2026-09-17, quando as regras
+  publicadas recusaram a gravação e o evento continuou sendo criado. Efeito
+  externo que eu não consigo registrar tem que ser desfeito, não deixado
+  para trás.
+*/
+async function criarERegistrar(ref, ev, camposDoId) {
+  const novo = await criarEvento(ev);
+  if (!novo?.id) {
+    const e = new Error("Google Agenda: criação não devolveu id");
+    e.origem = "calendar";
+    throw e;
+  }
+  try {
+    await gravar(ref, camposDoId(novo.id));
+  } catch (err) {
+    await apagarEvento(novo.id).catch(() => {});
+    err.desfeito = true;
+    throw err;
+  }
+}
 const atualizarEvento = (id, ev) => chamar("PUT", `/${encodeURIComponent(id)}`, ev);
 const apagarEvento = (id) => chamar("DELETE", `/${encodeURIComponent(id)}`);
 
@@ -328,7 +375,31 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
   const docDoDono = (colecao, id) => doc(db, "usuarios", dono, colecao, id);
   if (sincronizando) return;
   if (!agendaConfigurada()) return;
-  const t = await garantirToken();
+
+  /*
+    CORRIGIDO EM 2026-09-18. A sincronização AUTOMÁTICA (silencioso:true —
+    disparada 2,5s depois de criar/editar tarefa, ou ao abrir o app) nunca
+    tenta arrumar token sozinha. Só usa o que já está vivo na memória desta
+    aba (uma conexão feita nesta mesma sessão, ainda dentro da hora).
+
+    Por quê: pedirToken({silencioso:true}) deveria falhar calado quando não
+    consegue renovar sem interação (`prompt:''` é documentado assim pelo
+    Google), mas na prática, com cookie de terceiro bloqueado — o padrão no
+    Safari, e cada vez mais comum no Chrome — o GIS às vezes mostra a tela
+    de escolher conta mesmo com prompt vazio, contrariando a própria
+    documentação. E como `token` é variável em memória, ela reseta a cada
+    F5: a tentativa de renovar rodava de novo em TODA abertura fresca do
+    app, não só de hora em hora. Ele reportou (2026-09-18): "sempre que eu
+    crio uma atividade avulsa ele diz enviado pro Google Agenda, daí pede
+    pra logar de novo" — batia exatamente com isso.
+
+    Sem tentar renovar, a automática ou aproveita um token já vivo (grátis,
+    sem risco) ou desiste na hora, sem popup nenhum. O que fecha a lacuna é
+    o gatilho do Apps Script (apps-script/, a cada 15 min, sem navegador,
+    sem popup — mesmo caminho que a Jornada do Milhão já usa) e o clique
+    de propósito em "Sincronizar agora", que continua podendo pedir login.
+  */
+  const t = silencioso ? (agendaConectada() ? token.valor : null) : await garantirToken();
   if (!t) {
     DIAG.faltouToken = true;
     if (!silencioso) {
@@ -337,7 +408,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
       // Avisa UMA vez por sessão. Sem isso a sincronização falhava calada e
       // a única forma de descobrir era comparar com o Google Agenda na mão.
       avisouTokenNaSessao = true;
-      toast("O Google Agenda não está conectado, nada está sendo lançado lá. Perfil › Configurações › Google Agenda.", "erro", 9000);
+      toast("O Google Agenda não sincronizou agora. Se você instalou o gatilho do Apps Script, ele resolve sozinho em até 15 min — senão, Perfil › Configurações › Google Agenda › Sincronizar agora.", "info", 10000);
     }
     avisar();
     return;
@@ -347,6 +418,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
   sincronizando = true;
   const hoje = hojeISO();
   let ops = 0, erros = 0;
+  const porOrigem = { calendar: 0, firestore: 0, outro: 0 };
 
   let tetoBatido = false;
   const passo = async (fn) => {
@@ -354,7 +426,13 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
     ops++;
     try { await fn(); } catch (err) {
       erros++;
-      DIAG.ultimoErro = { mensagem: err.message || String(err), quando: Date.now() };
+      porOrigem[err.origem || "outro"]++;
+      DIAG.ultimoErro = {
+        mensagem: err.message || String(err),
+        origem: err.origem || "outro",
+        desfeito: !!err.desfeito,
+        quando: Date.now(),
+      };
       console.error("[agenda]", err);
       if (/sem-token|token-expirado/.test(String(err.message))) {
         ops = MAX_OPS_POR_RODADA; // para a rodada, tenta de novo depois
@@ -376,7 +454,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
         if (r.agendaEventoId) {
           await passo(async () => {
             await apagarEvento(r.agendaEventoId);
-            await updateDoc(ref, { agendaEventoId: null, agendaHash: null });
+            await gravar(ref, { agendaEventoId: null, agendaHash: null });
           });
         }
         continue;
@@ -390,14 +468,12 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
         if (r.agendaEventoId) {
           const resp = await atualizarEvento(r.agendaEventoId, ev);
           if (resp.ausente) {
-            const novo = await criarEvento(ev);
-            await updateDoc(ref, { agendaEventoId: novo.id, agendaHash: hash });
+            await criarERegistrar(ref, ev, (id) => ({ agendaEventoId: id, agendaHash: hash }));
           } else {
-            await updateDoc(ref, { agendaHash: hash });
+            await gravar(ref, { agendaHash: hash });
           }
         } else {
-          const novo = await criarEvento(ev);
-          await updateDoc(ref, { agendaEventoId: novo.id, agendaHash: hash });
+          await criarERegistrar(ref, ev, (id) => ({ agendaEventoId: id, agendaHash: hash }));
         }
       });
     }
@@ -416,7 +492,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
         if (tf.agendaEventoId) {
           await passo(async () => {
             await apagarEvento(tf.agendaEventoId);
-            await updateDoc(ref, { agendaEventoId: null, agendaHash: null });
+            await gravar(ref, { agendaEventoId: null, agendaHash: null });
           });
         }
         continue;
@@ -432,14 +508,12 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
         if (tf.agendaEventoId) {
           const resp = await atualizarEvento(tf.agendaEventoId, ev);
           if (resp.ausente) {
-            const novoEv = await criarEvento(ev);
-            if (novoEv?.id) await updateDoc(ref, { agendaEventoId: novoEv.id, agendaHash: hash });
+            await criarERegistrar(ref, ev, (id) => ({ agendaEventoId: id, agendaHash: hash }));
           } else {
-            await updateDoc(ref, { agendaHash: hash });
+            await gravar(ref, { agendaHash: hash });
           }
         } else {
-          const novoEv = await criarEvento(ev);
-          if (novoEv?.id) await updateDoc(ref, { agendaEventoId: novoEv.id, agendaHash: hash });
+          await criarERegistrar(ref, ev, (id) => ({ agendaEventoId: id, agendaHash: hash }));
         }
       });
     }
@@ -457,7 +531,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
         if (tf.agendaAtrasoId) {
           await passo(async () => {
             await apagarEvento(tf.agendaAtrasoId);
-            await updateDoc(ref, { agendaAtrasoId: null, agendaAtrasoAte: null });
+            await gravar(ref, { agendaAtrasoId: null, agendaAtrasoAte: null });
           });
         }
         continue;
@@ -469,8 +543,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
       await passo(async () => {
         if (tf.agendaAtrasoId) await apagarEvento(tf.agendaAtrasoId);
         const { evento, cobreAte } = eventoDeAtraso(tf, nomeCategoria);
-        const novoEv = await criarEvento(evento);
-        if (novoEv?.id) await updateDoc(ref, { agendaAtrasoId: novoEv.id, agendaAtrasoAte: cobreAte });
+        await criarERegistrar(ref, evento, (id) => ({ agendaAtrasoId: id, agendaAtrasoAte: cobreAte }));
       });
     }
 
@@ -478,13 +551,26 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
     DIAG.ultimasOps = ops;
     if (!erros) DIAG.ultimoErro = null;
 
+    /*
+      A mensagem nomeia QUEM recusou. Juntar as duas origens numa frase só
+      mandou o Felipe procurar no lugar errado em 2026-09-17: a tela dizia
+      que a agenda tinha recusado, e quem recusou foram as firestore.rules.
+    */
+    const culpa = porOrigem.firestore && porOrigem.calendar
+      ? `O Firestore recusou ${porOrigem.firestore} gravação(ões) e o Google Agenda ${porOrigem.calendar} evento(s).`
+      : porOrigem.firestore
+        ? `As regras do Firestore recusaram ${porOrigem.firestore} gravação(ões). Republicar as firestore.rules costuma resolver.`
+        : porOrigem.calendar
+          ? `O Google Agenda recusou ${porOrigem.calendar} evento(s).`
+          : `${erros} falha(s) na sincronização.`;
+
     if (!silencioso) {
-      if (erros) toast(`A agenda recusou ${erros} evento(s). O motivo está em Configurações › Google Agenda.`, "erro", 9000);
+      if (erros) toast(`${culpa} Detalhe em Configurações › Google Agenda.`, "erro", 11000);
       else if (ops) toast(`Agenda atualizada (${ops} evento${ops > 1 ? "s" : ""}).`, "sucesso");
       else toast("Agenda já estava em dia.", "info");
     } else if (erros && !avisouErroNaSessao) {
       avisouErroNaSessao = true;
-      toast("Algo não foi pro Google Agenda. Veja Perfil › Configurações › Google Agenda.", "erro", 9000);
+      toast(`${culpa} Veja Perfil › Configurações › Google Agenda.`, "erro", 11000);
     }
   } finally {
     sincronizando = false;
@@ -509,4 +595,78 @@ export async function apagarEventosDe({ agendaEventoId, agendaAtrasoId }) {
   for (const id of [agendaEventoId, agendaAtrasoId].filter(Boolean)) {
     try { await apagarEvento(id); } catch (err) { console.error("[agenda]", err); }
   }
+}
+
+/* ══════════════════ LIMPEZA DE EVENTO ÓRFÃO ══════════════════ */
+
+/*
+  Existe por causa de um estrago real: enquanto a gravação do id falhava, o
+  evento continuava sendo criado, e cada sincronização deixava uma duplicata
+  na agenda dele. O `criarERegistrar` fecha a porta pra frente; isto limpa o
+  que já passou.
+
+  Órfão = evento criado por este app (a descrição termina em "Lançado pelo
+  AppRotina.") cujo id NENHUM documento do Firestore aponta. Se nada aponta,
+  o app não tem como gerenciá-lo: ele nunca vai ser atualizado nem apagado.
+
+  Dois cuidados, porque apagar da agenda de alguém é destrutivo e
+  irreversível:
+  - a função só LISTA; apagar é uma segunda chamada, depois que ele confirma;
+  - evento criado nos últimos 10 minutos é ignorado, porque pode ser do
+    Apps Script, que grava o id no Firestore alguns segundos depois de criar.
+*/
+
+const MARCA = "Lançado pelo AppRotina.";
+const CARENCIA_MS = 10 * 60 * 1000;
+
+export async function procurarEventosOrfaos({ rotinas, tarefas, diasAtras = 120 }) {
+  const t = await garantirToken();
+  if (!t) throw new Error("Google Agenda não está conectado.");
+
+  const usados = new Set();
+  rotinas.forEach((r) => r.agendaEventoId && usados.add(r.agendaEventoId));
+  tarefas.forEach((tf) => {
+    if (tf.agendaEventoId) usados.add(tf.agendaEventoId);
+    if (tf.agendaAtrasoId) usados.add(tf.agendaAtrasoId);
+  });
+
+  const desde = new Date(Date.now() - diasAtras * 86400000).toISOString();
+  const orfaos = [];
+  let pagina = null;
+  const agora = Date.now();
+
+  for (let volta = 0; volta < 10; volta++) {
+    const qs = new URLSearchParams({
+      q: "AppRotina",
+      singleEvents: "false",
+      maxResults: "250",
+      timeMin: desde,
+      ...(pagina ? { pageToken: pagina } : {}),
+    });
+    const resp = await chamar("GET", `?${qs}`);
+    for (const ev of resp.items || []) {
+      if (!String(ev.description || "").includes(MARCA)) continue;
+      if (usados.has(ev.id)) continue;
+      if (ev.status === "cancelled") continue;
+      if (ev.created && agora - new Date(ev.created).getTime() < CARENCIA_MS) continue;
+      orfaos.push({
+        id: ev.id,
+        titulo: ev.summary || "(sem título)",
+        quando: ev.start?.dateTime || ev.start?.date || "",
+        recorrente: !!(ev.recurrence || []).length,
+      });
+    }
+    pagina = resp.nextPageToken;
+    if (!pagina) break;
+  }
+  return orfaos;
+}
+
+/** Apaga a lista que ele confirmou. Devolve quantos saíram e quantos falharam. */
+export async function apagarOrfaos(ids) {
+  let apagados = 0, falhas = 0;
+  for (const id of ids) {
+    try { await apagarEvento(id); apagados++; } catch (err) { falhas++; console.error("[agenda]", err); }
+  }
+  return { apagados, falhas };
 }

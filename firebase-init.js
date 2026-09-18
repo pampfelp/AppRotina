@@ -19,7 +19,13 @@ import {
   persistentSingleTabManager,
   connectFirestoreEmulator,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
-import { getAuth, connectAuthEmulator } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
+import {
+  initializeAuth,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  connectAuthEmulator,
+} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
 export const firebaseConfig = {
   apiKey: "AIzaSyB2NeOyCUHYGwWzT6Vt8tKD0En-Iz-LmyA",
@@ -61,7 +67,77 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() }),
 });
 
-export const auth = getAuth(app);
+/*
+  Persistência de sessão EXPLÍCITA, com cadeia de fallback, em vez de
+  getAuth(app) simples.
+
+  Por quê: getAuth() usa persistência padrão implícita, e o padrão
+  implícito pode degradar em silêncio em certos navegadores/extensões sem
+  avisar nada — Safari em modo privado, extensão de privacidade que
+  restringe IndexedDB, alguns webviews de app instalado. O sintoma nesses
+  casos é exatamente "voltou a pedir login depois do F5", sem erro nenhum
+  no console pra apontar a causa (caso real, 2026-09-17: Felipe reportou
+  F5 pedindo login de novo, no celular e no notebook).
+
+  initializeAuth() com persistence:[...] é o jeito oficial de dar uma
+  cadeia de fallback: tenta IndexedDB primeiro (mais robusto, sobrevive
+  reload e fechar o navegador), cai pra localStorage se IndexedDB não
+  estiver disponível, e cai pra sessão (sobrevive só reload, não fechar a
+  aba) como último recurso — em vez de simplesmente falhar calado.
+
+  A DETECÇÃO ABAIXO NÃO USA API INTERNA DO FIREBASE. O SDK não expõe
+  publicamente qual persistência da lista ele escolheu (o método que faz
+  essa escolha é interno, prefixado com "_", e pode mudar entre versões).
+  Em vez de depender disso, o probe abre um IndexedDB e escreve um
+  localStorage de teste por conta própria — os mesmos dois mecanismos que
+  o SDK testa por trás — usando só API pública do navegador. O resultado é
+  o que o SDK deve escolher, honesto sobre ser dedução e não confirmação.
+
+  DIAGNOSTICO_SESSAO fica exposto pra quem precisar investigar de novo:
+  abrir o console e digitar `DIAGNOSTICO_SESSAO` mostra o resultado.
+*/
+export const DIAGNOSTICO_SESSAO = { persistenciaAlvo: null, erro: null };
+
+async function probarIndexedDB() {
+  if (!("indexedDB" in window)) return false;
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open("__probe_approtina__", 1);
+      req.onupgradeneeded = () => { try { req.result.createObjectStore("x"); } catch (_) {} };
+      req.onsuccess = () => { req.result.close(); indexedDB.deleteDatabase("__probe_approtina__"); resolve(true); };
+      req.onerror = () => resolve(false);
+      req.onblocked = () => resolve(false);
+    } catch (_) { resolve(false); }
+  });
+}
+
+function probarLocalStorage() {
+  try {
+    const k = "__probe_approtina__";
+    localStorage.setItem(k, "1");
+    localStorage.removeItem(k);
+    return true;
+  } catch (_) { return false; }
+}
+
+async function detectarPersistencia() {
+  try {
+    if (await probarIndexedDB()) return "indexedDB";
+    if (probarLocalStorage()) return "localStorage";
+    return "sessao";
+  } catch (err) {
+    DIAGNOSTICO_SESSAO.erro = err?.message || String(err);
+    return "sessao";
+  }
+}
+
+DIAGNOSTICO_SESSAO.persistenciaAlvo = await detectarPersistencia();
+
+export const auth = initializeAuth(app, {
+  persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+});
+
+if (typeof window !== "undefined") window.DIAGNOSTICO_SESSAO = DIAGNOSTICO_SESSAO;
 
 export const configurado = !String(firebaseConfig.apiKey).includes("COLE_AQUI");
 

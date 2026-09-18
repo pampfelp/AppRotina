@@ -82,9 +82,19 @@ service cloud.firestore {
              ])
           && textoCheio(request.resource.data.nome, 80)
           && horaHM(request.resource.data.hora)
-          // a rotina sempre tem categoria própria: sem atividade cadastrada,
-          // ela é a própria atividade (crença nova, 2026-09-18)
-          && textoCheio(request.resource.data.categoriaId, 60)
+          /*
+            A rotina sempre tem categoria própria: sem atividade cadastrada,
+            ela é a própria atividade (decisão de 2026-09-18).
+
+            Mesmo assim o campo é ACEITO AUSENTE de propósito, porque rotina
+            criada antes dessa decisão não o tem, e exigir aqui faria TODA
+            gravação nessas rotinas antigas ser recusada: trocaria um
+            problema em duas rotinas por um problema em oito. Regra é piso,
+            não contrato do app. O app sempre grava o campo; a regra só
+            impede valor inválido.
+          */
+          && (!("categoriaId" in request.resource.data)
+              || textoCheio(request.resource.data.categoriaId, 60))
           && request.resource.data.duracaoMin is int
           && request.resource.data.duracaoMin >= 5
           && request.resource.data.duracaoMin <= 600
@@ -123,10 +133,17 @@ service cloud.firestore {
       match /config/perfil {
         allow read: if dono(email);
         allow create, update: if dono(email)
-          && request.resource.data.keys().hasOnly(['nome','telefone','nascimento','ocupacao'])
+          && request.resource.data.keys().hasOnly(['nome','telefone','nascimento','ocupacao','corTema'])
           && texto(request.resource.data.nome, 120)
           && texto(request.resource.data.telefone, 20)
-          && texto(request.resource.data.ocupacao, 80);
+          && texto(request.resource.data.ocupacao, 80)
+          // cor principal personalizável (2026-09-18): aceita ausente, senão
+          // conta criada antes dessa data seria recusada ao salvar qualquer
+          // outro dado do perfil — mesmo raciocínio do categoriaId da rotina.
+          && (!("corTema" in request.resource.data)
+              || request.resource.data.corTema in
+                 ['verde','ciano','azul','indigo','roxo','rosa','vermelho','ambar'])
+          && (!("nascimento" in request.resource.data) || texto(request.resource.data.nascimento, 10));
         allow delete: if false;
       }
 

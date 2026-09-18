@@ -52,21 +52,83 @@ import { montarTelaLogin, observarSessao, sair } from "./auth.js";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
-  diagnosticoAgenda,
+  diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
 } from "./agenda.js";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
   montarBadgeSincronizacao, rastrearSincronizacao, tooltipGrafico,
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
-  horaEmMinutos, gerarId, slugId, fmtData,
+  horaEmMinutos, gerarId, slugId, fmtDataHora,
 } from "./shared.js";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
 const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma vez
 const CORES_CAT = ["#02AD58", "#A867FF", "#C48001", "#0A9DD3", "#FF3457", "#0CA5A7"];
 const CATEGORIAS_INICIAIS = ["Trabalho", "Faculdade", "Religião", "Relacionamento"];
+
+/*
+  Cor principal do app, personalizável (2026-09-18, pedido dele). "Verde" é
+  literalmente a cor original de sempre (#2BE38A/#02AD58/#06251A), sem
+  recalcular nada — quem nunca mexe aqui não vê diferença nenhuma. As outras
+  sete foram geradas em OKLCH na mesma luminosidade (L=0,72) pra terem peso
+  visual parecido entre si — mesmo critério de "neon contra fundo escuro"
+  usado na paleta do ranking, só que aqui o alvo é UM bloco cheio de cor
+  (botão, glow), não uma linha fina de gráfico, então a luminosidade-alvo é
+  mais alta e o contraste foi conferido contra --panel (mín. 6.5:1, folga
+  grande acima do piso de 3:1 pra componente de UI) e contra o próprio ink
+  escuro que fica em cima (mín. 6.75:1, acima do piso de 4.5:1 de texto).
+
+  "Vermelho" fica perto do H do --debit (erro/descartar, #FF5C7A) — os dois
+  são vermelho-rosados porque não tem muito espaço no círculo de cor pra
+  variar isso sem deixar de parecer vermelho. Sabendo disso, quem escolher
+  Vermelho ou Rosa vai ver o botão "Salvar" (cor de marca) parecido com o
+  botão "Excluir" (--debit). Decisão dele, não escondida dele.
+*/
+const CORES_TEMA = [
+  { id: "verde",    nome: "Verde",    accent: "#2BE38A", deep: "#02AD58", ink: "#06251A" },
+  { id: "ciano",    nome: "Turquesa", accent: "#08BCBC", deep: "#068C8C", ink: "#001818" },
+  { id: "azul",     nome: "Azul",     accent: "#50A9FF", deep: "#017DD6", ink: "#00142B" },
+  { id: "indigo",   nome: "Índigo",   accent: "#8B9BFF", deep: "#5A5FFF", ink: "#0C0047" },
+  { id: "roxo",     nome: "Violeta",  accent: "#C082FF", deep: "#A516FF", ink: "#1F0036" },
+  { id: "rosa",     nome: "Rosa",     accent: "#FF56D3", deep: "#D000A7", ink: "#29001F" },
+  { id: "vermelho", nome: "Vermelho", accent: "#FF726B", deep: "#E40426", ink: "#2E0002" },
+  { id: "ambar",    nome: "Âmbar",    accent: "#E19000", deep: "#A86B06", ink: "#1F1000" },
+];
+const CHAVE_COR_TEMA = "rot_cor_tema";
+
+function hexParaRgb(hex) {
+  const n = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16)).join(",");
+}
+
+/**
+ * Escreve as cinco variáveis CSS que definem a cor principal (crença 6: o
+ * NOME do token é fixo, só o valor muda — isto só continua essa regra em
+ * runtime). Sem rede, sem Firestore: só CSS custom property no :root, que
+ * o resto da folha de estilo já lê em cascata.
+ */
+function aplicarCorTema(id) {
+  const cor = CORES_TEMA.find((c) => c.id === id) || CORES_TEMA[0];
+  const raiz = document.documentElement.style;
+  raiz.setProperty("--accent", cor.accent);
+  raiz.setProperty("--accent-deep", cor.deep);
+  raiz.setProperty("--accent-ink", cor.ink);
+  raiz.setProperty("--accent-rgb", hexParaRgb(cor.accent));
+  raiz.setProperty("--roxo", cor.accent);
+  return cor;
+}
+
+/*
+  Aplicada JÁ, antes de qualquer tela pintar (inclusive a de login), lendo
+  do cache local — a fonte de verdade é o Firestore (config/perfil.corTema),
+  mas esperar a rede pra pintar a cor certa piscaria verde e trocaria assim
+  que o documento chegasse. O onSnapshot de "perfil" reaplica com o valor
+  real assim que login e leitura terminam, e corrige o cache se divergir.
+*/
+aplicarCorTema(localStorage.getItem(CHAVE_COR_TEMA) || "verde");
 
 const STATE = {
   user: null,
@@ -312,6 +374,8 @@ function abrirEscutas() {
   registrarListener("perfil", () =>
     onSnapshot(docRef("config", "perfil"), (snap) => {
       STATE.perfil = snap.exists() ? snap.data() : {};
+      const cor = aplicarCorTema(STATE.perfil.corTema || "verde");
+      localStorage.setItem(CHAVE_COR_TEMA, cor.id); // cache pra pintar certo já na próxima abertura
       renderPerfil();
     }, erro)
   );
@@ -346,6 +410,23 @@ async function semearCategorias() {
 /* ═══════════════════════ lançamento diário ═══════════════════════ */
 
 const idTarefaRotina = (data, rotinaId, atividadeId) => `${data}__${rotinaId}__${atividadeId}`;
+
+/** Primeira data, a partir de AMANHÃ, cujo dia da semana está em `dias`.
+    Usado só quando hoje não é dia da rotina — se fosse, a data é hoje. */
+function proximaOcorrenciaISO(dias, base) {
+  for (let i = 1; i <= 7; i++) {
+    const cand = somarDiasISO(base, i);
+    if (dias.includes(diaSemanaISO(cand))) return cand;
+  }
+  return base; // nunca deveria chegar aqui — modalRotina exige >=1 dia marcado
+}
+
+/** "hoje", "amanhã", ou "quarta (24/09)" — pro toast do lançamento manual. */
+function rotuloDataCurta(iso) {
+  const rot = rotuloDia(iso, STATE.hoje);
+  if (rot) return rot.toLowerCase();
+  return `${nomeDiaSemana(diaSemanaISO(iso)).replace("-feira", "")} (${diaMes(iso)})`;
+}
 
 function tarefaDaAtividade(data, rotina, ativ) {
   return {
@@ -477,6 +558,67 @@ async function lancarRotinaHoje(rotina) {
     n++;
   }
   if (n) await emSegundoPlano(batch.commit(), "Não foi possível lançar a rotina de hoje.");
+}
+
+/*
+  Lançamento manual de UMA rotina, pedido pelo Felipe em 2026-09-18: um
+  botão na linha da rotina que lança a atividade dela agora, escolhendo a
+  data certa sozinho.
+
+  Regra exata que ele descreveu: se hoje for dia da rotina, lança hoje; se
+  hoje não for, lança na próxima ocorrência (não força hoje fora do dia
+  certo). Se já existir tarefa daquela rotina naquela data — em QUALQUER
+  estado, inclusive já concluída ou descartada — avisa que já existe, em
+  vez de recriar. Recriar por cima apagaria uma marcação real (crença 9);
+  "já existe" e "eu descartei de propósito" são coisas diferentes, e este
+  botão não pode confundir as duas.
+*/
+async function lancarAtividadeAgora(rotina) {
+  const dias = [...(rotina.diasSemana || [])].sort((a, b) => a - b);
+  if (!dias.length) return toast("Essa rotina não tem dia da semana marcado.", "erro");
+
+  const dow = diaSemanaISO(STATE.hoje);
+  const alvo = dias.includes(dow) ? STATE.hoje : proximaOcorrenciaISO(dias, STATE.hoje);
+
+  const atividades = atividadesEfetivas(rotina);
+  const jaLancadas = STATE.tarefas.filter((t) => t.data === alvo && t.rotinaId === rotina.id);
+  const existentes = new Set(jaLancadas.map((t) => t.rotinaAtividadeId));
+  const faltando = atividades.filter((a) => !existentes.has(a.id));
+  const quando = rotuloDataCurta(alvo);
+
+  if (!faltando.length) {
+    /*
+      Existência é checada sem olhar o estado — crença 9, nunca recria por
+      cima de uma marcação real. Mas "já existe" sozinho engana quando o
+      motivo é ter sido DESCARTADA de propósito: sem dizer isso, parece que
+      o botão travou, quando na verdade ele está respeitando uma decisão
+      já tomada (2026-09-18, pedido dele: avisar "atividade já criada e
+      descartada" em vez de um "já existe" genérico).
+    */
+    const descartadas = jaLancadas.filter((t) => t.estado === "descartada").length;
+    const concluidas = jaLancadas.filter((t) => t.estado === "concluida").length;
+    if (descartadas === jaLancadas.length) {
+      toast(`"${rotina.nome}" já foi criada e descartada em ${quando}. Não volta sozinha — em Painel › Histórico dá pra restaurar, se quiser fazer mesmo assim.`, "info", 8000);
+    } else if (descartadas) {
+      toast(`"${rotina.nome}" já existe em ${quando}, com parte descartada. Veja o Histórico, no Painel, se quiser restaurar alguma.`, "info", 8000);
+    } else if (concluidas === jaLancadas.length) {
+      toast(`"${rotina.nome}" já foi concluída em ${quando}.`, "info");
+    } else {
+      toast(`Já existe: "${rotina.nome}" já está lançada em ${quando}.`, "info");
+    }
+    return;
+  }
+
+  const batch = writeBatch(db);
+  faltando.forEach((a) =>
+    batch.set(docRef("tarefas", idTarefaRotina(alvo, rotina.id, a.id)), tarefaDaAtividade(alvo, rotina, a))
+  );
+  const ok = await emSegundoPlano(batch.commit(), "Não foi possível lançar a atividade.");
+  if (!ok) return;
+
+  const parcial = jaLancadas.length > 0;
+  toast(`"${rotina.nome}" lançada em ${quando}${parcial ? " (o resto já existia)" : ""}.`, "sucesso");
+  agendarSincronizacao();
 }
 
 /**
@@ -1180,6 +1322,9 @@ function renderRotinas() {
           <button type="button" class="pill ${r.ativa ? "credit" : "neutro"}" data-toggle-rotina="${esc(r.id)}"
                   title="${r.ativa ? "Pausar: para de lançar no checklist" : "Reativar: volta a lançar no checklist"}"
                   style="border:none; cursor:pointer;">${r.ativa ? "Ativa" : "Pausada"}</button>
+          <button type="button" data-lancar-rotina="${esc(r.id)}" aria-label="Lançar atividade agora"
+                  title="${r.ativa ? "Lança hoje se hoje for dia dela, senão na próxima ocorrência" : "Rotina pausada — reative pra lançar"}"
+                  ${r.ativa ? "" : "disabled"}><span class="ico">${ICONS.lancar}</span></button>
           <button type="button" data-ver="${esc(r.id)}" aria-label="Ver"><span class="ico">${ICONS.info}</span></button>
           <button type="button" data-editar-rotina="${esc(r.id)}" aria-label="Editar"><span class="ico">${ICONS.lapis}</span></button>
           <button type="button" data-excluir-rotina="${esc(r.id)}" aria-label="Excluir"><span class="ico">${ICONS.excluir}</span></button>
@@ -1201,6 +1346,8 @@ function renderRotinas() {
 
   alvo.querySelectorAll("[data-toggle-rotina]").forEach((b) =>
     b.addEventListener("click", () => alternarRotinaAtiva(b.dataset.toggleRotina)));
+  alvo.querySelectorAll("[data-lancar-rotina]").forEach((b) =>
+    b.addEventListener("click", () => lancarAtividadeAgora(STATE.rotinas.find((r) => r.id === b.dataset.lancarRotina))));
   alvo.querySelectorAll("[data-ver]").forEach((b) =>
     b.addEventListener("click", () => modalVerRotina(b.dataset.ver)));
   alvo.querySelectorAll("[data-editar-rotina]").forEach((b) =>
@@ -1427,6 +1574,37 @@ async function excluirRotina(id) {
 
 /* ─────────────────────────── perfil ─────────────────────────── */
 
+function renderCoresGrade() {
+  const alvo = $("cores-grade");
+  if (!alvo) return;
+  const atual = STATE.perfil.corTema || "verde";
+
+  alvo.innerHTML = CORES_TEMA.map((c) => `
+    <button type="button" class="cor-bola ${c.id === atual ? "on" : ""}"
+            style="background:${c.accent};" data-cor="${c.id}"
+            aria-label="${esc(c.nome)}" aria-pressed="${c.id === atual}" title="${esc(c.nome)}">
+      <span class="ico">${ICONS.check}</span>
+    </button>`).join("");
+
+  alvo.querySelectorAll("[data-cor]").forEach((b) =>
+    b.addEventListener("click", () => escolherCorTema(b.dataset.cor)));
+}
+
+async function escolherCorTema(id) {
+  if ((STATE.perfil.corTema || "verde") === id) return;
+
+  // otimista: pinta a cor na hora, o Firestore só confirma atrás (crença 11)
+  const cor = aplicarCorTema(id);
+  localStorage.setItem(CHAVE_COR_TEMA, cor.id);
+  STATE.perfil.corTema = id; // pra renderCoresGrade() já nascer com a bolinha certa marcada
+  renderCoresGrade();
+
+  await emSegundoPlano(
+    setDoc(docRef("config", "perfil"), { corTema: id }, { merge: true }),
+    "Não foi possível salvar a cor. Ela volta ao normal quando você reabrir o app."
+  );
+}
+
 function renderPerfil() {
   const u = STATE.user;
   if (!u) return;
@@ -1444,6 +1622,8 @@ function renderPerfil() {
 
   const provedores = (u.providerData || []).map((p) =>
     p.providerId === "google.com" ? "Google" : p.providerId === "password" ? "E-mail e senha" : p.providerId);
+
+  renderCoresGrade();
 
   $("perfil-dados").innerHTML = [
     ["Nome completo", STATE.perfil.nome],
@@ -1662,14 +1842,38 @@ function modalAgenda() {
      ${d.configurada && !conectada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Não conectado. Enquanto estiver assim, <strong>nada</strong> é lançado
-        na sua agenda, e o app não tem como avisar disso sozinho.</span>
+        <span>Não conectado neste navegador. Enquanto estiver assim, tarefa criada
+        aqui só chega na agenda quando o gatilho do Apps Script rodar (veja abaixo),
+        ou quando você clicar em "Conectar".</span>
       </div>` : ""}
+     <div class="aviso info">
+       <span class="ico">${ICONS.info}</span>
+       <span><strong>Recomendado: instalar o gatilho do Apps Script.</strong> Ele
+       roda a cada 15 minutos na nuvem do Google, com o app fechado, sem pedir
+       login — é o mesmo jeito que a Jornada do Milhão já usa. Sem ele, este
+       navegador tenta sincronizar sozinho quando dá, mas o token do Google
+       expira de hora em hora e às vezes pede login de novo em vez de renovar
+       calado. Passo a passo em <code>apps-script/LEIA-ME.md</code>, no
+       repositório — uns 5 minutos, só você consegue fazer.</span>
+     </div>
      ${d.ultimoErro ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Último erro da API, em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
-        <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code></span>
+        <span>
+          <strong>${d.ultimoErro.origem === "firestore"
+            ? "As regras do Firestore recusaram a gravação."
+            : d.ultimoErro.origem === "calendar"
+              ? "O Google Agenda recusou a chamada."
+              : "A sincronização falhou."}</strong>
+          ${d.ultimoErro.origem === "firestore" ? `
+            <br>Quem recusa isso são as <code>firestore.rules</code>, não o Google.
+            O evento é criado e o app não consegue guardar o id dele.
+            Republicar as regras do repositório no console do Firebase resolve
+            (passo 4 do README).` : ""}
+          ${d.ultimoErro.desfeito ? `<br>O evento criado nessa tentativa foi apagado, pra não sobrar duplicata.` : ""}
+          <br><br>Em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
+          <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code>
+        </span>
       </div>` : ""}
      ${conectada && !faltando && !d.ultimoErro ? `
       <div class="aviso info">
@@ -1687,6 +1891,7 @@ function modalAgenda() {
        <span class="rot">Última sincronização</span>
        <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "nunca nesta sessão"}</span>
      </div>
+     ${conectada ? `<button type="button" class="btn danger bloco" id="a-desconectar" style="margin-top:14px;">Desconectar do Google Agenda</button>` : ""}
 
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
@@ -1696,12 +1901,15 @@ function modalAgenda() {
        apaga esse evento, porque ele é registro do que aconteceu; descartar apaga.<br>
        <strong>Atrasada</strong> vira uma série diária de 14 dias no horário original,
        e essa para de cobrar quando você conclui ou descarta.<br><br>
-       O que depende de você abrir o app: uma tarefa que vence num dia em que você
-       nunca abriu ganha a cobrança só na próxima abertura.</span>
+       Com o gatilho do Apps Script instalado, tudo isso acontece sozinho, mesmo
+       com o app fechado. Sem ele, depende de abrir o app (ou clicar em
+       "Sincronizar agora") pra empurrar o que mudou.</span>
      </div>`,
-    `${conectada ? `<button type="button" class="btn danger" id="a-desconectar">Desconectar</button>` : `<span></span>`}
+    `${conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
      <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`
   );
+
+  $("a-limpar")?.addEventListener("click", modalOrfaos);
 
   $("a-desconectar")?.addEventListener("click", () => {
     desconectarAgenda();
@@ -1718,12 +1926,109 @@ function modalAgenda() {
   });
 }
 
+/*
+  Varredura de evento órfão na agenda.
+
+  Apagar da agenda de alguém é destrutivo, irreversível e aparece pra quem
+  compartilha o calendário. Então a função nunca apaga sozinha: ela lista,
+  mostra título e data de cada um, e só apaga depois de ele confirmar.
+*/
+async function modalOrfaos() {
+  fecharModal();
+  toast("Procurando na sua agenda…", "info", 3000);
+
+  let orfaos;
+  try {
+    orfaos = await procurarEventosOrfaos({ rotinas: STATE.rotinas, tarefas: STATE.tarefas });
+  } catch (err) {
+    return toast(err.message || "Não foi possível procurar.", "erro", 8000);
+  }
+
+  if (!orfaos.length) {
+    return abrirModal("Duplicatas na agenda",
+      `<div class="aviso info">
+         <span class="ico">${ICONS.info}</span>
+         <span>Nenhum evento solto. Tudo que o app criou na sua agenda nos
+         últimos 120 dias está sendo gerenciado por ele.</span>
+       </div>`);
+  }
+
+  abrirModal("Duplicatas na agenda",
+    `<div class="aviso">
+       <span class="ico">${ICONS.alerta}</span>
+       <span>Encontrei <strong>${orfaos.length}</strong> evento(s) que este app
+       criou e não consegue mais gerenciar: nenhuma rotina ou tarefa aponta pra
+       eles, então nunca vão ser atualizados nem apagados sozinhos. Quase sempre
+       são duplicatas de uma gravação que falhou.</span>
+     </div>
+     <div class="aviso info">
+       <span class="ico">${ICONS.info}</span>
+       <span>Confira a lista antes. Apagar evento da agenda não tem como desfazer.</span>
+     </div>
+     <div class="table-wrap">
+       <table>
+         <thead><tr><th>Evento</th><th>Quando</th><th>Tipo</th></tr></thead>
+         <tbody>
+           ${orfaos.map((o) => `
+             <tr>
+               <td class="larga">${esc(o.titulo)}</td>
+               <td class="num">${esc(o.quando ? fmtDataHora(o.quando) : "—")}</td>
+               <td>${o.recorrente ? `<span class="pill warn">série</span>` : `<span class="pill neutro">único</span>`}</td>
+             </tr>`).join("")}
+         </tbody>
+       </table>
+     </div>`,
+    `<button type="button" class="btn" data-fechar-modal>Deixar como está</button>
+     <button type="button" class="btn danger" id="o-apagar">Apagar os ${orfaos.length}</button>`
+  );
+
+  $("o-apagar").addEventListener("click", async () => {
+    fecharModal();
+    const ok = await confirmar(
+      `Apagar ${orfaos.length} evento(s) da sua Google Agenda? Isso não tem como desfazer.`,
+      { textoConfirmar: `Apagar ${orfaos.length}` }
+    );
+    if (!ok) return;
+    toast("Apagando…", "info", 3000);
+    const { apagados, falhas } = await apagarOrfaos(orfaos.map((o) => o.id));
+    toast(
+      falhas ? `${apagados} apagado(s), ${falhas} falharam.` : `${apagados} evento(s) apagado(s) da agenda.`,
+      falhas ? "erro" : "sucesso", 8000
+    );
+  });
+}
+
 function modalSobre() {
+  /*
+    A linha "Sessão salva em" existe por causa de um relato real (2026-09-17):
+    o Felipe reportou que o F5 pedia login de novo, no celular e no
+    notebook. Sem visibilidade nenhuma sobre qual mecanismo de persistência
+    o navegador aceitou, o único jeito de investigar seria adivinhar. Agora
+    fica registrado aqui: "IndexedDB" é o normal e sobrevive fechar o
+    navegador; "localStorage" e "somente esta aba" são os degraus de
+    fallback, e "somente esta aba" quer dizer que o navegador (ou uma
+    extensão) está bloqueando armazenamento persistente — nesse caso um F5
+    comum não desloga, mas fechar a aba desloga.
+  */
+  const persistencia = {
+    indexedDB: "IndexedDB (sobrevive fechar o navegador)",
+    localStorage: "localStorage (sobrevive fechar o navegador)",
+    sessao: "somente esta aba (o navegador está bloqueando armazenamento persistente)",
+  }[DIAGNOSTICO_SESSAO.persistenciaAlvo] || DIAGNOSTICO_SESSAO.persistenciaAlvo;
+
   abrirModal("Sobre o AppRotina",
     `<div class="dado-linha"><span class="rot">Versão</span><span class="val num">1</span></div>
      <div class="dado-linha"><span class="rot">Janela do histórico</span><span class="val num">${DIAS_JANELA} dias</span></div>
      <div class="dado-linha"><span class="rot">Recuperação de lançamento</span><span class="val num">${MAX_RECUPERACAO} dias</span></div>
      <div class="dado-linha"><span class="rot">Último lançamento</span><span class="val num">${esc(STATE.hoje)}</span></div>
+     <div class="dado-linha"><span class="rot">Sessão salva em</span><span class="val">${esc(persistencia)}</span></div>
+     ${DIAGNOSTICO_SESSAO.persistenciaAlvo === "sessao" ? `
+     <div class="aviso" style="margin-top:8px;">
+       <span class="ico">${ICONS.alerta}</span>
+       <span>Este navegador não está guardando sua sessão de forma persistente.
+       Confira se há navegação privada, ou uma extensão bloqueando cookies/
+       armazenamento de terceiros, ativa.</span>
+     </div>` : ""}
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
        <span>O painel e o histórico olham no máximo ${DIAS_JANELA} dias pra trás,
