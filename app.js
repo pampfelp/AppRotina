@@ -42,19 +42,19 @@
   abertura e derrubou a cota diária gratuita em produção.
 */
 
-import { db, auth, configurado } from "./firebase-init.js?v=9";
+import { db, auth, configurado } from "./firebase-init.js?v=10";
 import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, where, writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
-import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=9";
+import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=10";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
   diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
-} from "./agenda.js?v=9";
-import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=9";
+} from "./agenda.js?v=10";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=10";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
@@ -62,7 +62,7 @@ import {
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
   horaEmMinutos, gerarId, slugId, fmtDataHora,
-} from "./shared.js?v=9";
+} from "./shared.js?v=10";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
 const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma vez

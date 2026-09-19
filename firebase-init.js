@@ -24,6 +24,7 @@ import {
   indexedDBLocalPersistence,
   browserLocalPersistence,
   browserSessionPersistence,
+  browserPopupRedirectResolver,
   connectAuthEmulator,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
@@ -127,8 +128,21 @@ async function detectarPersistencia() {
 
 DIAGNOSTICO_SESSAO.persistenciaAlvo = await detectarPersistencia();
 
+/*
+  O popupRedirectResolver NÃO É OPCIONAL AQUI, e essa é a pegadinha do
+  initializeAuth(). O getAuth() registra esse resolvedor sozinho; o
+  initializeAuth() não registra nada que você não passe. Sem ele, o SDK
+  continua funcionando pra e-mail e senha, mas TODO login com Google —
+  signInWithPopup e signInWithRedirect — estoura `auth/argument-error`, uma
+  mensagem que não diz nada sobre a causa.
+
+  Foi exatamente o que aconteceu em 2026-09-18: a troca por initializeAuth,
+  feita pra corrigir o F5 pedindo login, derrubou o login com Google junto,
+  e o sintoma apareceu primeiro como "a conta da minha noiva não entra".
+*/
 export const auth = initializeAuth(app, {
   persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+  popupRedirectResolver: browserPopupRedirectResolver,
 });
 
 if (typeof window !== "undefined") window.DIAGNOSTICO_SESSAO = DIAGNOSTICO_SESSAO;
