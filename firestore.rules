@@ -130,18 +130,27 @@ service cloud.firestore {
 
       match /config/perfil {
         allow read: if dono(email);
+        /*
+          TODO campo daqui é aceito ausente, e isso não é frouxidão — é o que
+          faz uma gravação PARCIAL funcionar. Trocar a cor do app grava só
+          `corTema` com merge; numa conta que nunca preencheu o perfil, o
+          documento nasce nessa hora contendo esse único campo. Exigir `nome`
+          presente recusava exatamente esse caso, e o sintoma era "não
+          consigo mudar a cor" só pra quem ainda não tinha perfil — quem já
+          tinha não via defeito nenhum (achado real, 2026-09-18).
+
+          A regra é piso: impede valor inválido, não obriga o app a mandar o
+          documento inteiro toda vez.
+        */
         allow create, update: if dono(email)
           && request.resource.data.keys().hasOnly(['nome','telefone','nascimento','ocupacao','corTema'])
-          && texto(request.resource.data.nome, 120)
-          && texto(request.resource.data.telefone, 20)
-          && texto(request.resource.data.ocupacao, 80)
-          // cor principal personalizável (2026-09-18): aceita ausente, senão
-          // conta criada antes dessa data seria recusada ao salvar qualquer
-          // outro dado do perfil — mesmo raciocínio do categoriaId da rotina.
+          && (!("nome" in request.resource.data) || texto(request.resource.data.nome, 120))
+          && (!("telefone" in request.resource.data) || texto(request.resource.data.telefone, 20))
+          && (!("ocupacao" in request.resource.data) || texto(request.resource.data.ocupacao, 80))
+          && (!("nascimento" in request.resource.data) || texto(request.resource.data.nascimento, 10))
           && (!("corTema" in request.resource.data)
               || request.resource.data.corTema in
-                 ['verde','ciano','azul','indigo','roxo','rosa','vermelho','ambar'])
-          && (!("nascimento" in request.resource.data) || texto(request.resource.data.nascimento, 10));
+                 ['verde','ciano','azul','indigo','roxo','rosa','vermelho','ambar']);
         allow delete: if false;
       }
 

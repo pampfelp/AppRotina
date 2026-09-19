@@ -24,7 +24,7 @@
   adianta burlar pela tela: o banco recusa igual.
 */
 
-import { auth } from "./firebase-init.js?v=11";
+import { auth } from "./firebase-init.js?v=12";
 import {
   GoogleAuthProvider,
   signInWithPopup,
@@ -38,7 +38,7 @@ import {
   fetchSignInMethodsForEmail,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
-import { toast, esc, ICONS } from "./shared.js?v=11";
+import { toast, esc, ICONS } from "./shared.js?v=12";
 
 const ESCOPO_AGENDA = "https://www.googleapis.com/auth/calendar.events";
 

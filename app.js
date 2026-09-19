@@ -42,19 +42,19 @@
   abertura e derrubou a cota diária gratuita em produção.
 */
 
-import { db, auth, configurado } from "./firebase-init.js?v=11";
+import { db, auth, configurado } from "./firebase-init.js?v=12";
 import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, where, writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
-import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=11";
+import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=12";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
   diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
-} from "./agenda.js?v=11";
-import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=11";
+} from "./agenda.js?v=12";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=12";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
@@ -62,7 +62,7 @@ import {
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
   horaEmMinutos, gerarId, slugId, fmtDataHora,
-} from "./shared.js?v=11";
+} from "./shared.js?v=12";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
 const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma vez
@@ -708,12 +708,21 @@ async function criarCategoriaRapida(nomeDigitado) {
   const existente = STATE.categorias.find((c) => c.nome.toLowerCase() === nome.toLowerCase());
   if (existente) return existente;
   const id = slugId(nome) || `c-${gerarId()}`;
-  const cat = { id, nome, cor: CORES_CAT[STATE.categorias.length % CORES_CAT.length], ordem: STATE.categorias.length, ativa: true };
+  /*
+    `dados` é o que vai pro banco e `cat` é o que fica na memória: o `id`
+    entra só na versão de memória, porque no banco ele já É o id do
+    documento. Gravar um campo `id` dentro do documento fazia a regra
+    recusar a escrita inteira (o hasOnly não lista `id`), e o efeito era
+    traiçoeiro — a categoria aparecia na hora, pela atualização otimista, e
+    sumia no próximo carregamento.
+  */
+  const dados = { nome, cor: CORES_CAT[STATE.categorias.length % CORES_CAT.length], ordem: STATE.categorias.length, ativa: true };
+  const cat = { id, ...dados };
   // otimista: entra na lista local já, porque quem chamou precisa do id na
   // hora pra selecionar a categoria recém-criada (crença 11)
   STATE.categorias = [...STATE.categorias, cat].sort((a, b) => (a.ordem ?? 99) - (b.ordem ?? 99) || a.nome.localeCompare(b.nome, "pt-BR"));
   await emSegundoPlano(
-    setDoc(docRef("categorias", id), { ...cat, createdAt: serverTimestamp() }, { merge: true }),
+    setDoc(docRef("categorias", id), { ...dados, createdAt: serverTimestamp() }, { merge: true }),
     "Não foi possível criar a categoria."
   );
   return cat;

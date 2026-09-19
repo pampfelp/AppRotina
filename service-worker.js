@@ -15,7 +15,7 @@
 */
 
 const PREFIXO = "rot-";
-const CACHE_NAME = `${PREFIXO}v11`; // sobe a cada mudança relevante de asset
+const CACHE_NAME = `${PREFIXO}v12`; // sobe a cada mudança relevante de asset
 /*
   TODO módulo local leva ?v= igual, inclusive os que só aparecem como import
   dentro de outro arquivo (crença 7). Aprendido na marra em 2026-09-18: só o
@@ -32,13 +32,13 @@ const CACHE_NAME = `${PREFIXO}v11`; // sobe a cada mudança relevante de asset
 const SHELL = [
   "./",
   "./index.html",
-  "./style.css?v=11",
-  "./app.js?v=11",
-  "./shared.js?v=11",
-  "./auth.js?v=11",
-  "./agenda.js?v=11",
-  "./firebase-init.js?v=11",
-  "./manifest.json?v=11",
+  "./style.css?v=12",
+  "./app.js?v=12",
+  "./shared.js?v=12",
+  "./auth.js?v=12",
+  "./agenda.js?v=12",
+  "./firebase-init.js?v=12",
+  "./manifest.json?v=12",
 ];
 
 self.addEventListener("install", (e) => {
