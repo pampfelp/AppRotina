@@ -5,15 +5,26 @@
   2026-09-17 foi: login com Google E com e-mail/senha, os dois.
 
   Detalhe que evita uma armadilha real: os dois métodos precisam cair na
-  MESMA conta, senão o Google gera um uid e o e-mail/senha gera outro, e ele
-  veria duas listas de tarefas diferentes dependendo de como entrou. A
-  solução aqui não é vincular credencial (que quebra quando ele esquece qual
-  usou primeiro): as firestore.rules autorizam por E-MAIL, não por uid, e os
-  documentos não carregam dono. Os dois logins do mesmo e-mail leem e
-  escrevem exatamente o mesmo dado.
+  MESMA conta, senão o Google gera um uid e o e-mail/senha gera outro, e a
+  pessoa veria duas listas de tarefas diferentes dependendo de como entrou.
+  A solução aqui não é vincular credencial (que quebra quando ela esquece
+  qual usou primeiro): as firestore.rules autorizam por E-MAIL, não por uid,
+  e cada e-mail tem seu espaço em `usuarios/{email}/...`.
+
+  CADASTRO ABERTO (2026-09-18, decisão do Felipe). Qualquer pessoa cria a
+  própria conta, pelo Google ou por e-mail e senha — não existe mais lista
+  de autorizados.
+
+  POR ISSO O E-MAIL CONFIRMADO VIROU OBRIGATÓRIO. Como o espaço de dados é
+  endereçado pelo e-mail, entrar sem confirmar deixaria alguém se cadastrar
+  com um e-mail que não é dele e ocupar aquele espaço. Quem entra pelo
+  Google já vem confirmado pelo próprio Google e não sente diferença; quem
+  cria senha recebe um link e passa pela tela de confirmação antes de usar
+  o app. As firestore.rules exigem o mesmo (`email_verified`), então não
+  adianta burlar pela tela: o banco recusa igual.
 */
 
-import { auth, EMAILS_AUTORIZADOS } from "./firebase-init.js";
+import { auth } from "./firebase-init.js?v=9";
 import {
   GoogleAuthProvider,
   signInWithPopup,
@@ -21,19 +32,15 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  sendEmailVerification,
   onAuthStateChanged,
   signOut,
   fetchSignInMethodsForEmail,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
-import { toast, esc, ICONS } from "./shared.js";
+import { toast, esc, ICONS } from "./shared.js?v=9";
 
 const ESCOPO_AGENDA = "https://www.googleapis.com/auth/calendar.events";
-
-function autorizado(user) {
-  const email = (user?.email || "").toLowerCase();
-  return EMAILS_AUTORIZADOS.some((e) => e.toLowerCase() === email);
-}
 
 /** Traduz os códigos do Firebase Auth pra frase que dá pra agir. */
 function mensagemErro(err) {
@@ -123,7 +130,11 @@ export function montarTelaLogin() {
           if (metodos.includes("google.com") && !metodos.includes("password")) {
             return toast("Esse e-mail já entra pelo Google. Use o botão do Google.", "erro");
           }
-          await createUserWithEmailAndPassword(auth, email, senha);
+          const cred = await createUserWithEmailAndPassword(auth, email, senha);
+          // o link de confirmação sai agora; até clicar nele, observarSessao
+          // segura a pessoa na tela de confirmação
+          await sendEmailVerification(cred.user).catch((e) => console.error(e));
+          toast("Conta criada. Confira o link que enviamos pro seu e-mail.", "sucesso", 8000);
         } else {
           await signInWithEmailAndPassword(auth, email, senha);
         }
@@ -173,15 +184,72 @@ async function entrarComGoogle() {
 
 /* ───────────────────────── ciclo de sessão ───────────────────────── */
 
-export function observarSessao({ aoEntrar, aoSair }) {
+export function observarSessao({ aoEntrar, aoSair, aoNaoConfirmado }) {
   onAuthStateChanged(auth, async (user) => {
     if (!user) return aoSair();
-    if (!autorizado(user)) {
-      toast(`A conta ${user.email} não está autorizada neste app.`, "erro", 9000);
-      await signOut(auth);
-      return aoSair();
-    }
+    /*
+      Sem e-mail confirmado a pessoa fica na porta. Não é frescura de tela:
+      as firestore.rules exigem `email_verified`, então deixar entrar aqui
+      só produziria um app que abre e recusa toda leitura e gravação, sem
+      dizer por quê.
+    */
+    if (!user.emailVerified) return aoNaoConfirmado(user);
     aoEntrar(user);
+  });
+}
+
+/**
+ * Tela de espera pra quem criou conta por senha e ainda não clicou no link.
+ * Quem entra pelo Google nunca cai aqui: o Google já entrega confirmado.
+ */
+export function montarTelaConfirmacao(user) {
+  const el = document.getElementById("tela-login");
+  el.innerHTML = `
+    <div class="login-card">
+      <div class="login-marca">
+        <span class="ico">${ICONS.alerta}</span>
+        <strong>Falta confirmar seu e-mail</strong>
+      </div>
+      <p class="sub">Enviamos um link para <strong>${esc(user.email || "")}</strong>.
+      Abra o e-mail, clique no link e volte aqui.</p>
+
+      <button type="button" class="btn primary bloco" id="btn-ja-confirmei">Já confirmei</button>
+      <button type="button" class="btn bloco" id="btn-reenviar" style="margin-top:8px;">Reenviar o link</button>
+
+      <div style="display:flex; justify-content:center; margin-top:12px;">
+        <button type="button" class="login-alt" id="btn-outra-conta">Entrar com outra conta</button>
+      </div>
+    </div>`;
+
+  el.querySelector("#btn-ja-confirmei").addEventListener("click", async () => {
+    try {
+      await user.reload();
+    } catch (err) {
+      return toast(mensagemErro(err), "erro");
+    }
+    if (!auth.currentUser?.emailVerified) {
+      return toast("Ainda não consta como confirmado. Abra o link do e-mail e tente de novo.", "erro", 7000);
+    }
+    /*
+      O token desta aba ainda carrega email_verified=false, e é ele que as
+      firestore.rules leem — recarregar a página é o jeito mais curto de
+      voltar com um token novo, em vez de remendar estado pela metade.
+    */
+    location.reload();
+  });
+
+  el.querySelector("#btn-reenviar").addEventListener("click", async () => {
+    try {
+      await sendEmailVerification(user);
+      toast("Link reenviado. Confira também a caixa de spam.", "sucesso", 7000);
+    } catch (err) {
+      toast(mensagemErro(err), "erro");
+    }
+  });
+
+  el.querySelector("#btn-outra-conta").addEventListener("click", async () => {
+    await signOut(auth);
+    montarTelaLogin();
   });
 }
 

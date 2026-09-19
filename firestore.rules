@@ -15,11 +15,15 @@
   duas listas diferentes dependendo de como entrou. Por e-mail, os dois
   caminhos caem no mesmo espaço.
 
-  A LISTA DE AUTORIZADOS existe pra que uma conta Google qualquer não crie
-  espaço aqui e consuma a mesma cota gratuita do projeto. Ela tem que bater
-  com EMAILS_AUTORIZADOS de firebase-init.js — duas listas mantidas por mãos
-  diferentes divergem em silêncio (crença 14 / antecipacao.md C1), então ao
-  acrescentar alguém, acrescente nos dois lugares.
+  CADASTRO ABERTO, PORTA NO E-MAIL CONFIRMADO (2026-09-18). Não existe mais
+  lista de autorizados: qualquer pessoa cria conta e ganha o próprio espaço.
+  O que substitui a lista é `email_verified`, e ele não é enfeite — como o
+  espaço é endereçado pelo e-mail, sem essa exigência alguém se cadastraria
+  por senha com um e-mail que não é dele e ocuparia aquele espaço. Quem
+  entra pelo Google já vem confirmado.
+
+  A regra vale aqui mesmo com a tela do app também checando: tela é
+  conveniência, regra é a fechadura (crença 1).
 
   hasOnly() em toda coleção fecha mass assignment: sem ele, uma escrita
   poderia enfiar campo não previsto aqui.
@@ -29,18 +33,12 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function autorizado() {
-      return request.auth != null
-        && request.auth.token.email.lower() in [
-             'felipecastiged@gmail.com'
-             // , 'email-da-sua-mulher@gmail.com'  ← acrescente aqui E em firebase-init.js
-           ];
-    }
-
-    // dono do espaço: além de estar na lista, o e-mail tem que ser o mesmo
-    // do caminho que ele está tentando ler ou escrever
+    /* dono do espaço: logado, e-mail confirmado, e o e-mail do token é
+       exatamente o do caminho que ele está tentando ler ou escrever */
     function dono(email) {
-      return autorizado() && request.auth.token.email.lower() == email;
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() == email;
     }
 
     function texto(v, maxLen) {

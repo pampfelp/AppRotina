@@ -53,10 +53,10 @@
   dele, que pode ser nenhum.
 */
 
-import { db } from "./firebase-init.js";
-import { GOOGLE_CLIENT_ID } from "./firebase-init.js";
+import { db } from "./firebase-init.js?v=9";
+import { GOOGLE_CLIENT_ID } from "./firebase-init.js?v=9";
 import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
-import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js";
+import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js?v=9";
 
 const API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const ESCOPO = "https://www.googleapis.com/auth/calendar.events";

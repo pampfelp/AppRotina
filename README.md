@@ -341,28 +341,35 @@ primeiro login depois dessa atualização — o app avisa em tela enquanto move.
 
 ---
 
-## Mais de uma pessoa usando
+## Qualquer pessoa pode se cadastrar
+
+O cadastro é aberto: quem abrir o link cria a própria conta, pelo Google ou
+por e-mail e senha. Não existe lista de autorizados.
 
 Cada conta tem o próprio espaço em `usuarios/{email}/...`: rotinas, tarefas,
 categorias e perfil separados, e uma conta nunca enxerga a outra. Quem
 decide isso é o caminho do documento, não um campo dentro dele — então não
 existe gravação capaz de "se passar" por outro dono.
 
-**Pra liberar alguém**, o e-mail precisa entrar nas DUAS listas:
+**E-mail confirmado é obrigatório**, e não é frescura de tela. Como o espaço
+de dados é endereçado pelo e-mail, sem essa exigência alguém se cadastraria
+por senha com um e-mail que não é dele e ocuparia aquele espaço. Quem entra
+pelo Google já vem confirmado e não sente diferença; quem cria senha recebe
+um link e fica numa tela de espera até clicar. A exigência está nos dois
+lados — na tela (`auth.js`) e nas regras (`email_verified`) —, porque tela é
+conveniência e regra é a fechadura.
 
-1. `EMAILS_AUTORIZADOS` em `firebase-init.js`;
-2. a lista da função `autorizado()` em `firestore.rules` (e republicar as
-   regras no console).
-
-Faltando numa das duas, o sintoma é mudo: a pessoa leva "conta não
-autorizada", ou entra e encontra o app vazio. A lista existe pra que uma
-conta Google qualquer não crie espaço no seu projeto e gaste a mesma cota
-gratuita.
+**A cota gratuita é compartilhada entre todo mundo.** O teto do plano grátis
+(50 mil leituras e 20 mil gravações por dia, tabela lá em cima) é do
+projeto, não de cada pessoa. O app foi escrito pra ler pouco por usuário
+(pendentes + últimos 90 dias, nunca a coleção inteira), então dá pra crescer
+bastante — mas com cadastro aberto isso vira um número a acompanhar no
+console do Firebase, e não uma garantia.
 
 **O Google Agenda é individual.** O Apps Script escreve na agenda de quem
-autorizou ele. Pra segunda pessoa ter a agenda dela sincronizando sozinha,
-ela instala uma cópia do script na conta Google dela, trocando `EMAIL_DONO`
-pelo e-mail dela — passo a passo em
+autorizou ele. Pra outra pessoa ter a agenda dela sincronizando sozinha, ela
+instala uma cópia do script na conta Google dela, trocando `EMAIL_DONO` pelo
+e-mail dela — passo a passo em
 [`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md).
 
 **Link aberto de dentro do WhatsApp não loga com Google.** O WhatsApp abre
@@ -374,7 +381,7 @@ Copie o link e cole no Chrome ou no Safari de verdade antes de entrar.
 ## Checklist de "está tudo ligado?"
 
 - [ ] `firebase-init.js` sem nenhum `COLE_AQUI` sobrando
-- [ ] `firestore.rules` publicada com o seu e-mail
+- [ ] `firestore.rules` publicada (cadastro aberto, porta no e-mail confirmado)
 - [ ] Google e E-mail/senha ativados, e `pampfelp.github.io` nos domínios autorizados
 - [ ] API do Calendar ativada, escopo `calendar.events` na tela de consentimento, você como usuário de teste
 - [ ] `GOOGLE_CLIENT_ID` preenchido com o MESMO cliente que o Firebase criou

@@ -15,17 +15,30 @@
 */
 
 const PREFIXO = "rot-";
-const CACHE_NAME = `${PREFIXO}v8`; // sobe a cada mudança relevante de asset
+const CACHE_NAME = `${PREFIXO}v9`; // sobe a cada mudança relevante de asset
+/*
+  TODO módulo local leva ?v= igual, inclusive os que só aparecem como import
+  dentro de outro arquivo (crença 7). Aprendido na marra em 2026-09-18: só o
+  `app.js?v=` estava versionado, então numa atualização o navegador baixou o
+  `app.js` novo e serviu o `auth.js` velho do cache HTTP — o import não batia
+  com o que o outro arquivo exportava e o app inteiro não carregava, tela
+  preta, sem nada no lugar. Quem tinha o service worker ativo não via o
+  problema; quem tinha desregistrado, via.
+
+  Ou seja: ao subir a versão, sobe TODAS juntas — aqui, no index.html e nos
+  imports de app.js, auth.js e agenda.js. Meia atualização é pior que
+  nenhuma.
+*/
 const SHELL = [
   "./",
   "./index.html",
-  "./style.css?v=8",
-  "./app.js?v=8",
-  "./shared.js",
-  "./auth.js",
-  "./agenda.js",
-  "./firebase-init.js",
-  "./manifest.json?v=8",
+  "./style.css?v=9",
+  "./app.js?v=9",
+  "./shared.js?v=9",
+  "./auth.js?v=9",
+  "./agenda.js?v=9",
+  "./firebase-init.js?v=9",
+  "./manifest.json?v=9",
 ];
 
 self.addEventListener("install", (e) => {
