@@ -42,19 +42,19 @@
   abertura e derrubou a cota diária gratuita em produção.
 */
 
-import { db, auth, configurado } from "./firebase-init.js?v=10";
+import { db, auth, configurado } from "./firebase-init.js?v=11";
 import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, where, writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
-import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=10";
+import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=11";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
   diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
-} from "./agenda.js?v=10";
-import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=10";
+} from "./agenda.js?v=11";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=11";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
@@ -62,7 +62,7 @@ import {
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
   horaEmMinutos, gerarId, slugId, fmtDataHora,
-} from "./shared.js?v=10";
+} from "./shared.js?v=11";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
 const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma vez
@@ -203,10 +203,9 @@ if (!configurado) {
   $("tela-login").classList.add("show");
   $("tela-login").innerHTML = `
     <div class="login-card">
-      <div class="login-marca"><span class="ico">${ICONS.alerta}</span><strong>Falta ligar o Firebase</strong></div>
-      <p class="sub">O <code>firebase-init.js</code> ainda está com <code>COLE_AQUI</code>.
-      O passo a passo para criar o projeto e colar a config está no
-      <code>README.md</code> deste repositório, do passo 1 ao 5.</p>
+      <div class="login-marca"><span class="ico">${ICONS.alerta}</span><strong>AppRotina indisponível</strong></div>
+      <p class="sub">O app está fora do ar no momento por um problema de
+      configuração. Tente de novo mais tarde.</p>
     </div>`;
 } else {
   montarTelaLogin();
@@ -394,12 +393,14 @@ function juntarTarefas() {
   renderTudo();
 }
 
+/* O detalhe técnico vai pro console, pra quem for investigar; na tela fica
+   só o que o usuário pode fazer a respeito. */
 function erro(err) {
   console.error(err);
   if (err?.code === "permission-denied") {
-    toast("Sem permissão no Firestore. Confira se seu e-mail está na lista das firestore.rules.", "erro", 9000);
+    toast("Não foi possível acessar seus dados. Saia e entre de novo na sua conta.", "erro", 9000);
   } else {
-    toast(err.message || "Falha ao ler os dados.", "erro");
+    toast("Não foi possível carregar seus dados. Verifique sua conexão.", "erro");
   }
 }
 
@@ -1714,7 +1715,7 @@ function atualizarLinhaAgenda() {
     + avulsas.filter((t) => !t.agendaEventoId).length
     + atrasadas.filter((t) => !t.agendaAtrasoId).length;
 
-  if (!agendaConfigurada()) sub.textContent = "falta o ID do cliente OAuth";
+  if (!agendaConfigurada()) sub.textContent = "indisponível no momento";
   else if (!agendaConectada() && !agendaJaAutorizada()) sub.textContent = "não conectado, nada é lançado";
   else if (faltando) sub.textContent = `${faltando} item(ns) fora da agenda`;
   else sub.textContent = "tudo sincronizado";
@@ -1732,8 +1733,8 @@ function modalCategorias() {
     const corpo = abrirModal("Categorias",
       `<div class="aviso info">
          <span class="ico">${ICONS.info}</span>
-         <span>Categoria é escolhida numa lista, nunca digitada solta. Sem isso
-         "Igreja" e "igreja" virariam duas linhas no ranking.</span>
+         <span>Categoria é sempre escolhida da lista, nunca digitada solta —
+         é isso que mantém o ranking do Painel somando certo.</span>
        </div>
        <div id="c-lista"></div>
        <button type="button" class="btn bloco" id="c-add" style="margin-top:8px;">
@@ -1842,44 +1843,22 @@ function modalAgenda() {
     `${!d.configurada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Falta o ID do cliente OAuth em <code>firebase-init.js</code>.
-        Passo 6 do <code>README.md</code>.</span>
+        <span>A conexão com o Google Agenda não está disponível no momento.</span>
       </div>` : ""}
      ${d.configurada && !conectada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Não conectado neste navegador. Enquanto estiver assim, tarefa criada
-        aqui só chega na agenda quando o gatilho do Apps Script rodar (veja abaixo),
-        ou quando você clicar em "Conectar".</span>
+        <span>Você ainda não conectou sua agenda. Enquanto isso, nada é lançado
+        no Google Agenda — toque em "Conectar" pra começar.</span>
       </div>` : ""}
-     <div class="aviso info">
-       <span class="ico">${ICONS.info}</span>
-       <span><strong>Recomendado: instalar o gatilho do Apps Script.</strong> Ele
-       roda a cada 15 minutos na nuvem do Google, com o app fechado, sem pedir
-       login — é o mesmo jeito que a Jornada do Milhão já usa. Sem ele, este
-       navegador tenta sincronizar sozinho quando dá, mas o token do Google
-       expira de hora em hora e às vezes pede login de novo em vez de renovar
-       calado. Passo a passo em <code>apps-script/LEIA-ME.md</code>, no
-       repositório — uns 5 minutos, só você consegue fazer.</span>
-     </div>
      ${d.ultimoErro ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>
-          <strong>${d.ultimoErro.origem === "firestore"
-            ? "As regras do Firestore recusaram a gravação."
-            : d.ultimoErro.origem === "calendar"
-              ? "O Google Agenda recusou a chamada."
-              : "A sincronização falhou."}</strong>
-          ${d.ultimoErro.origem === "firestore" ? `
-            <br>Quem recusa isso são as <code>firestore.rules</code>, não o Google.
-            O evento é criado e o app não consegue guardar o id dele.
-            Republicar as regras do repositório no console do Firebase resolve
-            (passo 4 do README).` : ""}
-          ${d.ultimoErro.desfeito ? `<br>O evento criado nessa tentativa foi apagado, pra não sobrar duplicata.` : ""}
-          <br><br>Em ${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}:
-          <br><code style="font-size:11.5px; word-break:break-all;">${esc(String(d.ultimoErro.mensagem).slice(0, 220))}</code>
-        </span>
+        <span>A última sincronização não foi concluída
+        (${esc(new Date(d.ultimoErro.quando).toLocaleString("pt-BR"))}).
+        ${d.ultimoErro.desfeito ? "O evento dessa tentativa foi desfeito, pra não duplicar na sua agenda. " : ""}
+        Tente de novo em "Sincronizar agora"; se continuar, desconecte e conecte
+        a agenda outra vez.</span>
       </div>` : ""}
      ${conectada && !faltando && !d.ultimoErro ? `
       <div class="aviso info">
@@ -1888,14 +1867,14 @@ function modalAgenda() {
       </div>` : ""}
 
      <div class="dado-linha"><span class="rot">Situação</span><span class="val">${
-       d.conectada ? "conectado" : d.autorizada ? "autorizado, reconecta quando precisar" : "não conectado"
+       d.conectada || d.autorizada ? "conectado" : "não conectado"
      }</span></div>
      ${linha("Rotinas com evento recorrente", rotOk, ativas.length)}
      ${linha("Tarefas avulsas de hoje em diante", avulsasOk, avulsas.length)}
      ${linha("Atrasadas com cobrança diária", atrasadasOk, atrasadas.length)}
      <div class="dado-linha">
        <span class="rot">Última sincronização</span>
-       <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "nunca nesta sessão"}</span>
+       <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "ainda não"}</span>
      </div>
      ${conectada ? `<button type="button" class="btn danger bloco" id="a-desconectar" style="margin-top:14px;">Desconectar do Google Agenda</button>` : ""}
 
@@ -1907,9 +1886,9 @@ function modalAgenda() {
        apaga esse evento, porque ele é registro do que aconteceu; descartar apaga.<br>
        <strong>Atrasada</strong> vira uma série diária de 14 dias no horário original,
        e essa para de cobrar quando você conclui ou descarta.<br><br>
-       Com o gatilho do Apps Script instalado, tudo isso acontece sozinho, mesmo
-       com o app fechado. Sem ele, depende de abrir o app (ou clicar em
-       "Sincronizar agora") pra empurrar o que mudou.</span>
+       Os lembretes tocam pelo próprio Google Agenda, mesmo com o app fechado.
+       O que muda aqui chega lá quando você abre o app, ou agora mesmo em
+       "Sincronizar agora".</span>
      </div>`,
     `${conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
      <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`
@@ -2006,41 +1985,29 @@ async function modalOrfaos() {
 
 function modalSobre() {
   /*
-    A linha "Sessão salva em" existe por causa de um relato real (2026-09-17):
-    o Felipe reportou que o F5 pedia login de novo, no celular e no
-    notebook. Sem visibilidade nenhuma sobre qual mecanismo de persistência
-    o navegador aceitou, o único jeito de investigar seria adivinhar. Agora
-    fica registrado aqui: "IndexedDB" é o normal e sobrevive fechar o
-    navegador; "localStorage" e "somente esta aba" são os degraus de
-    fallback, e "somente esta aba" quer dizer que o navegador (ou uma
-    extensão) está bloqueando armazenamento persistente — nesse caso um F5
-    comum não desloga, mas fechar a aba desloga.
+    O diagnóstico de persistência de sessão continua existindo (é o que
+    explica um "F5 pediu login de novo"), mas ele só aparece na tela quando
+    está DEGRADADO — aí vira instrução do que fazer. No caso normal não é
+    assunto do usuário, e o valor bruto segue no console, em
+    DIAGNOSTICO_SESSAO.
   */
-  const persistencia = {
-    indexedDB: "IndexedDB (sobrevive fechar o navegador)",
-    localStorage: "localStorage (sobrevive fechar o navegador)",
-    sessao: "somente esta aba (o navegador está bloqueando armazenamento persistente)",
-  }[DIAGNOSTICO_SESSAO.persistenciaAlvo] || DIAGNOSTICO_SESSAO.persistenciaAlvo;
+  const sessaoFragil = DIAGNOSTICO_SESSAO.persistenciaAlvo === "sessao";
 
   abrirModal("Sobre o AppRotina",
     `<div class="dado-linha"><span class="rot">Versão</span><span class="val num">1</span></div>
-     <div class="dado-linha"><span class="rot">Janela do histórico</span><span class="val num">${DIAS_JANELA} dias</span></div>
-     <div class="dado-linha"><span class="rot">Recuperação de lançamento</span><span class="val num">${MAX_RECUPERACAO} dias</span></div>
-     <div class="dado-linha"><span class="rot">Último lançamento</span><span class="val num">${esc(STATE.hoje)}</span></div>
-     <div class="dado-linha"><span class="rot">Sessão salva em</span><span class="val">${esc(persistencia)}</span></div>
-     ${DIAGNOSTICO_SESSAO.persistenciaAlvo === "sessao" ? `
-     <div class="aviso" style="margin-top:8px;">
+     <div class="dado-linha"><span class="rot">Histórico e painel</span><span class="val">últimos ${DIAS_JANELA} dias</span></div>
+     ${sessaoFragil ? `
+     <div class="aviso" style="margin-top:12px;">
        <span class="ico">${ICONS.alerta}</span>
-       <span>Este navegador não está guardando sua sessão de forma persistente.
-       Confira se há navegação privada, ou uma extensão bloqueando cookies/
-       armazenamento de terceiros, ativa.</span>
+       <span>Este navegador não está guardando sua sessão: ao fechar a aba,
+       você vai precisar entrar de novo. Costuma ser navegação privada, ou
+       uma extensão bloqueando armazenamento do site.</span>
      </div>` : ""}
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
-       <span>O painel e o histórico olham no máximo ${DIAS_JANELA} dias pra trás,
-       de propósito: escutar a coleção inteira estouraria a cota diária gratuita do
-       Firestore conforme a base cresce. Tarefa pendente de qualquer idade continua
-       aparecendo no checklist, sem esse limite.</span>
+       <span>O painel e o histórico mostram os últimos ${DIAS_JANELA} dias.
+       Tarefa pendente continua aparecendo no checklist por mais antiga que
+       seja, sem esse limite.</span>
      </div>`
   );
 }

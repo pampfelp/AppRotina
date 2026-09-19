@@ -24,7 +24,7 @@
   adianta burlar pela tela: o banco recusa igual.
 */
 
-import { auth } from "./firebase-init.js?v=10";
+import { auth } from "./firebase-init.js?v=11";
 import {
   GoogleAuthProvider,
   signInWithPopup,
@@ -38,7 +38,7 @@ import {
   fetchSignInMethodsForEmail,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
-import { toast, esc, ICONS } from "./shared.js?v=10";
+import { toast, esc, ICONS } from "./shared.js?v=11";
 
 const ESCOPO_AGENDA = "https://www.googleapis.com/auth/calendar.events";
 
@@ -53,9 +53,12 @@ function mensagemErro(err) {
   if (c === "auth/too-many-requests") return "Muitas tentativas. Espere um minuto e tente de novo.";
   if (c === "auth/popup-blocked") return "O navegador bloqueou a janela do Google. Liberando o pop-up resolve.";
   if (c === "auth/popup-closed-by-user") return "Janela do Google fechada antes de terminar.";
-  if (c === "auth/unauthorized-domain") return "Este domínio não está autorizado no Firebase Auth. Ver passo 5 do README.";
-  if (c === "auth/operation-not-allowed") return "O provedor não está ativado no console do Firebase. Ver passo 5 do README.";
-  return err?.message || "Não foi possível entrar.";
+  if (c === "auth/unauthorized-domain") return "Este endereço não está liberado para login. Abra o app pelo link oficial.";
+  if (c === "auth/operation-not-allowed") return "Esta forma de login está indisponível no momento.";
+  if (c === "auth/network-request-failed") return "Sem conexão. Verifique sua internet e tente de novo.";
+  // o código cru vai pro console; na tela, só o que dá pra agir
+  console.error("[auth]", err);
+  return "Não foi possível entrar. Tente de novo.";
 }
 
 /* ───────────────────────── tela de login ───────────────────────── */

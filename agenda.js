@@ -53,10 +53,10 @@
   dele, que pode ser nenhum.
 */
 
-import { db } from "./firebase-init.js?v=10";
-import { GOOGLE_CLIENT_ID } from "./firebase-init.js?v=10";
+import { db } from "./firebase-init.js?v=11";
+import { GOOGLE_CLIENT_ID } from "./firebase-init.js?v=11";
 import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
-import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js?v=10";
+import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js?v=11";
 
 const API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const ESCOPO = "https://www.googleapis.com/auth/calendar.events";
@@ -162,7 +162,7 @@ async function garantirToken() {
 /** Chamado pelo botão "Conectar" nas Configurações. Pode abrir janela. */
 export async function conectarAgenda() {
   if (!agendaConfigurada()) {
-    toast("Falta o ID do cliente OAuth. Ver passo 6 do README.", "erro", 8000);
+    toast("A conexão com o Google Agenda está indisponível no momento.", "erro", 8000);
     return false;
   }
   const t = await pedirToken({ silencioso: false });
@@ -408,7 +408,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
       // Avisa UMA vez por sessão. Sem isso a sincronização falhava calada e
       // a única forma de descobrir era comparar com o Google Agenda na mão.
       avisouTokenNaSessao = true;
-      toast("O Google Agenda não sincronizou agora. Se você instalou o gatilho do Apps Script, ele resolve sozinho em até 15 min — senão, Perfil › Configurações › Google Agenda › Sincronizar agora.", "info", 10000);
+      toast("Suas mudanças ainda não foram pro Google Agenda. Abra Perfil › Configurações › Google Agenda › Sincronizar agora.", "info", 9000);
     }
     avisar();
     return;
@@ -552,25 +552,22 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
     if (!erros) DIAG.ultimoErro = null;
 
     /*
-      A mensagem nomeia QUEM recusou. Juntar as duas origens numa frase só
-      mandou o Felipe procurar no lugar errado em 2026-09-17: a tela dizia
-      que a agenda tinha recusado, e quem recusou foram as firestore.rules.
+      Na tela, o número do que não passou — sem nomear a peça interna que
+      recusou, que não muda nada do que o usuário pode fazer. A origem
+      continua no console e no diagnóstico (DIAG.ultimoErro.origem), que é
+      onde ela serve.
     */
-    const culpa = porOrigem.firestore && porOrigem.calendar
-      ? `O Firestore recusou ${porOrigem.firestore} gravação(ões) e o Google Agenda ${porOrigem.calendar} evento(s).`
-      : porOrigem.firestore
-        ? `As regras do Firestore recusaram ${porOrigem.firestore} gravação(ões). Republicar as firestore.rules costuma resolver.`
-        : porOrigem.calendar
-          ? `O Google Agenda recusou ${porOrigem.calendar} evento(s).`
-          : `${erros} falha(s) na sincronização.`;
+    const culpa = erros === 1
+      ? "1 item não foi pro Google Agenda."
+      : `${erros} itens não foram pro Google Agenda.`;
 
     if (!silencioso) {
-      if (erros) toast(`${culpa} Detalhe em Configurações › Google Agenda.`, "erro", 11000);
+      if (erros) toast(`${culpa} Tente "Sincronizar agora" de novo.`, "erro", 9000);
       else if (ops) toast(`Agenda atualizada (${ops} evento${ops > 1 ? "s" : ""}).`, "sucesso");
       else toast("Agenda já estava em dia.", "info");
     } else if (erros && !avisouErroNaSessao) {
       avisouErroNaSessao = true;
-      toast(`${culpa} Veja Perfil › Configurações › Google Agenda.`, "erro", 11000);
+      toast(`${culpa} Veja Perfil › Configurações › Google Agenda.`, "erro", 9000);
     }
   } finally {
     sincronizando = false;
