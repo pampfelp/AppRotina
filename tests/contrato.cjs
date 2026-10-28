@@ -65,4 +65,3 @@ console.log("PASS: delete queue ordering/retry; success/error status; installati
  c.contasOAuth_=()=>[]; c.PropertiesService={getScriptProperties:()=>({getProperty:()=>null})}; assert.throws(()=>c.sincronizarAgendaAppRotina(),/1 conta/);
  console.log("PASS: primary calendar account validation before writes.");
 }
-

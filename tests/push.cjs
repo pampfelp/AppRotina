@@ -100,4 +100,3 @@ function servidor(tipo = 'sucesso') {
  assert.equal(await context.ativarPush(),true,'reativa diretamente após desativar sem recarregar');assert.equal(gravacoes.length,3);
  console.log('OK: backend horários/dedup/revalidação/falhas, SW escopo e notificação, cliente permissão síncrona e desativação.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
-

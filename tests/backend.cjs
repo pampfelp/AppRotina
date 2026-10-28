@@ -71,6 +71,3 @@ context.sincronizarAtrasadas_=()=>0;
 assert.throws(()=>context.sincronizarAgendaAppRotina(),/1 conta/);
 assert.equal(unlocked,2);
 console.log("PASS: PATCH existing, legacy ID migration, 404 recreation, 403 stop, safe DELETE, rollback deleted document, ambiguous legacy stop, timezone/reminders, aggregate failures and lock release.");
-
-
-
