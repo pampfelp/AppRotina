@@ -46,7 +46,7 @@ export const firebaseConfig = {
 export const GOOGLE_CLIENT_ID = "1031461486725-71b80n9ji0dj9je3ikbu3qblsclvea90.apps.googleusercontent.com";
 
 // URL pública do sincronizador; a autorização de cada conta fica no servidor.
-export const AGENDA_SERVIDOR_URL = "";
+export const AGENDA_SERVIDOR_URL = "https://script.google.com/macros/s/AKfycbzL7fQbelRZbnvPChgWXcLDshzlCY5bJ28xJ0Ml39GC_lY_r8njvawJ1Q_lLbmfkDB24A/exec";
 
 /*
   NÃO EXISTE MAIS LISTA DE AUTORIZADOS (2026-09-18). O cadastro é aberto:

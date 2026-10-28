@@ -1998,6 +1998,7 @@ function atualizarAvisosAparelho() {
   const d = diagnosticoPush();
   status.textContent = d.mensagem;
   botao.hidden = !d.disponivel || (!d.ativa && d.permissao === "denied");
+  botao.style.display = botao.hidden ? "none" : "";
   botao.disabled = false;
   botao.textContent = d.ativa ? "Desativar avisos neste aparelho" : "Ativar avisos neste aparelho";
 }
