@@ -12,14 +12,12 @@
   público (crença 4: sem servidor, sem build step — mas também sem segredo
   exposto).
 
-  A SAÍDA: um Apps Script rodando com a SUA conta Google (a mesma dona do
-  projeto Firebase), autenticado por ScriptApp.getOAuthToken() — nunca uma
-  senha, nunca um client_secret. Como você é dono do projeto, esse token já
-  enxerga o Firestore direto pela API REST, sem passar pelas firestore.rules
-  (elas só valem pra quem entra pelo SDK do navegador com login do app) e
-  sem precisar de chave de service account nenhuma. O gatilho de tempo
-  renova a autorização sozinho a cada execução — é o Google quem garante
-  isso, não o Apps Script.
+  O servidor usa ScriptApp.getOAuthToken() para o Firestore, com a conta
+  proprietária do projeto. Para o Calendar, cada pessoa autoriza sua própria
+  conta pelo OAuth.gs; o refresh token fica só nas propriedades do script.
+  Isso não concede acesso ao Firebase nem usa a agenda do proprietário no
+  lugar da agenda de outra pessoa. A conta proprietária mantém a integração
+  anterior até conectar pelo novo fluxo ou desligá-la explicitamente.
 
   Espelha a lógica de agenda.js (mesmo app, lado navegador): mesmas três
   regras (rotina vira evento recorrente semanal, tarefa avulsa vira evento
@@ -30,74 +28,150 @@
 
 const FIREBASE_PROJECT_ID = "approtina-54752";
 
-/*
-  De quem é o espaço que este script sincroniza. Desde 2026-09-18 cada
-  pessoa tem o próprio (`usuarios/{email}/...`), e este script escreve na
-  agenda de quem AUTORIZOU ele — então os dois precisam ser a mesma pessoa.
-  Se sua mulher quiser a agenda dela sincronizando sozinha, ela instala uma
-  cópia deste script na conta Google dela, com o e-mail dela aqui.
-*/
+// Conta proprietária do script; outras contas entram pelo OAuth.gs, sem IAM.
 const EMAIL_DONO = "felipecastiged@gmail.com";
 
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
-// e-mail cru no caminho, sem encodeURIComponent: "@" e "." são caracteres
-// legais num segmento de URL, e mandar "%40" dependeria de a API decodificar
-// do jeito esperado — se não decodificasse, o script leria um espaço vazio e
-// diria "nada a fazer", que é a falha calada mais cara de achar
-const ESPACO = `${FIRESTORE_BASE}/usuarios/${EMAIL_DONO.toLowerCase()}`;
+let emailAgendaAtual = EMAIL_DONO.toLowerCase();
+let ESPACO = `${FIRESTORE_BASE}/usuarios/${encodeURIComponent(emailAgendaAtual)}`;
+let tokenCalendarAtual = null;
+let contaUsaOAuth = false;
 const DIAS_JANELA = 90;     // mesmo recorte de tarefas recentes que o app usa
 const DIAS_COBRANCA = 14;   // tamanho da série diária de atrasada
 const TZ = "America/Sao_Paulo";
 const OFFSET_SP_MS = 3 * 60 * 60 * 1000; // América/São Paulo é UTC-3 o ano todo, sem horário de verão desde 2019
 
-const WEEKDAYS = [
-  CalendarApp.Weekday.SUNDAY, CalendarApp.Weekday.MONDAY, CalendarApp.Weekday.TUESDAY,
-  CalendarApp.Weekday.WEDNESDAY, CalendarApp.Weekday.THURSDAY, CalendarApp.Weekday.FRIDAY,
-  CalendarApp.Weekday.SATURDAY,
-];
+const BYDAY = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+const CALENDAR_API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+let falhasDaRodada = 0;
 
 /* ═══════════════════════ instalação (rode uma vez) ═══════════════════════ */
 
 /** Rode esta função UMA VEZ pelo editor do Apps Script pra criar o gatilho. */
 function instalarGatilho() {
-  removerGatilhos_();
-  ScriptApp.newTrigger("sincronizarAgendaAppRotina").timeBased().everyMinutes(15).create();
-  Logger.log("Gatilho instalado: sincronizarAgendaAppRotina a cada 15 minutos.");
-  sincronizarAgendaAppRotina(); // já roda uma vez na hora, pra você ver o resultado sem esperar
-}
-
-function removerGatilhos_() {
-  ScriptApp.getProjectTriggers()
-    .filter((t) => t.getHandlerFunction() === "sincronizarAgendaAppRotina")
-    .forEach((t) => ScriptApp.deleteTrigger(t));
+  return comLockAgenda_(() => {
+    const existentes = ScriptApp.getProjectTriggers()
+      .filter((t) => t.getHandlerFunction() === "sincronizarAgendaAppRotina");
+    let contaConferida = false;
+    try {
+      conferirContaAgenda_();
+      contaConferida = true;
+      PropertiesService.getScriptProperties().deleteProperty("agenda_owner_desativado");
+      // O app deixa de escrever no Calendar ao ler este estado. A espera dá
+      // tempo para uma sincronização já iniciada terminar antes da leitura.
+      fsConfigPatch_({ servidorAtivo: true, intervaloMinutos: 15, versao: 13 });
+      Utilities.sleep(30000);
+      sincronizarRodada_();
+      if (!existentes.length) {
+        ScriptApp.newTrigger("sincronizarAgendaAppRotina").timeBased().everyMinutes(15).create();
+      }
+      existentes.slice(1).forEach((t) => ScriptApp.deleteTrigger(t));
+      Logger.log("Gatilho instalado: sincronizarAgendaAppRotina a cada 15 minutos.");
+    } catch (err) {
+      if (contaConferida) fsConfigPatch_({ servidorAtivo: existentes.length > 0, ultimoErro: mensagemAgenda_(err) });
+      throw err;
+    }
+  });
 }
 
 /* ═══════════════════════ ponto de entrada (gatilho) ═══════════════════════ */
 
 function sincronizarAgendaAppRotina() {
+  return comLockAgenda_(() => {
+    const contas = contasOAuth_();
+    const ownerDesativado = PropertiesService.getScriptProperties().getProperty("agenda_owner_desativado") === "1";
+    if (!ownerDesativado && !contas.some((c) => c.email === EMAIL_DONO.toLowerCase())) contas.unshift({ email: EMAIL_DONO.toLowerCase(), proprietario: true });
+    let total = 0, falhas = 0;
+    contas.forEach((conta) => {
+      if (conta.invalida) { falhas++; return; }
+      comContaAgenda_(conta.email, null, !conta.proprietario, () => {
+        try {
+          tokenCalendarAtual = conta.proprietario ? ScriptApp.getOAuthToken() : renovarTokenAgenda_(conta);
+          conferirContaAgenda_();
+          total += sincronizarRodada_();
+        } catch (err) {
+          falhas++;
+          try { fsConfigPatch_({ ultimoErro: mensagemAgenda_(err) }); }
+          catch (_) { Logger.log("Não foi possível gravar o estado de uma conta."); }
+          Logger.log("Falhou a sincronização de uma conta: %s", mensagemAgenda_(err));
+        }
+      });
+    });
+    if (falhas) throw new Error(`${falhas} conta(s) não foram sincronizadas. Consulte o estado de conexão no aplicativo.`);
+    return total;
+  });
+}
+
+function comContaAgenda_(email, token, usaOAuth, executar) {
+  const anterior = { email: emailAgendaAtual, espaco: ESPACO, token: tokenCalendarAtual, oauth: contaUsaOAuth };
+  emailAgendaAtual = email.toLowerCase();
+  ESPACO = `${FIRESTORE_BASE}/usuarios/${encodeURIComponent(emailAgendaAtual)}`;
+  tokenCalendarAtual = token;
+  contaUsaOAuth = usaOAuth;
+  try { return executar(); }
+  finally {
+    emailAgendaAtual = anterior.email; ESPACO = anterior.espaco;
+    tokenCalendarAtual = anterior.token; contaUsaOAuth = anterior.oauth;
+  }
+}
+
+function comLockAgenda_(executar) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) throw new Error("Já existe uma sincronização em andamento.");
+  try {
+    return executar();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function sincronizarRodada_() {
+  falhasDaRodada = 0;
+  const opsExclusoes = sincronizarExclusoes_();
   const categorias = fsListAll_("categorias");
   const nomeCategoria = criarNomeCategoria_(categorias);
   const rotinas = fsListAll_("rotinas");
   const tarefas = buscarTarefasRelevantes_();
-  const cal = CalendarApp.getDefaultCalendar();
   const hoje = hojeISO_();
+  const opsRotinas = sincronizarRotinas_(rotinas, nomeCategoria);
+  const opsAvulsas = sincronizarTarefasAvulsas_(tarefas, nomeCategoria, hoje);
+  const opsAtraso = sincronizarAtrasadas_(tarefas, nomeCategoria, hoje);
+  const total = opsExclusoes + opsRotinas + opsAvulsas + opsAtraso;
+  Logger.log("AppRotina: %s operação(ões), %s falha(s).", total, falhasDaRodada);
+  if (falhasDaRodada) throw new Error(`${falhasDaRodada} item(ns) não foram sincronizados. Consulte os erros desta execução.`);
+  fsConfigPatch_({ servidorAtivo: true, intervaloMinutos: 15, ultimaSinc: Date.now(), ultimoErro: "", versao: 13 });
+  return total;
+}
 
-  const opsRotinas = sincronizarRotinas_(cal, rotinas, nomeCategoria);
-  const opsAvulsas = sincronizarTarefasAvulsas_(cal, tarefas, nomeCategoria, hoje);
-  const opsAtraso = sincronizarAtrasadas_(cal, tarefas, nomeCategoria, hoje);
+function mensagemAgenda_(err) {
+  if (err && err.publico) return err.publico;
+  const texto = String(err && err.message || "");
+  if (/Google Agenda 401/.test(texto)) return "O acesso ao Google Agenda expirou. Conecte a conta novamente.";
+  if (/Google Agenda 403/.test(texto)) return "O Google Agenda recusou o acesso. Confira a autorização e a API do projeto.";
+  if (/Firestore 40[13]/.test(texto)) return "O servidor não conseguiu acessar os dados desta conta.";
+  if (/^\d+ item\(ns\)/.test(texto)) return texto;
+  return "A sincronização não foi concluída. Consulte a execução do servidor.";
+}
 
-  const total = opsRotinas + opsAvulsas + opsAtraso;
-  if (total) {
-    Logger.log(
-      "AppRotina: %s operação(ões) no Google Agenda (rotinas=%s, avulsas=%s, atraso=%s).",
-      total, opsRotinas, opsAvulsas, opsAtraso
-    );
-  }
+function sincronizarExclusoes_() {
+  let ops = 0;
+  fsListAll_("agendaExclusoes").forEach((item) => {
+    try {
+      if (item.agendaEventoId) apagarEventoSeExistir_(item.agendaEventoId);
+      if (item.agendaAtrasoId) apagarEventoSeExistir_(item.agendaAtrasoId);
+      fsFetch_(`${ESPACO}/agendaExclusoes/${encodeURIComponent(item.__id)}`, { method: "delete" });
+      ops++;
+    } catch (err) {
+      falhasDaRodada++;
+      Logger.log("AppRotina: falhou uma exclusão pendente — %s", err);
+    }
+  });
+  return ops;
 }
 
 /* ═══════════════════════ rotinas → evento recorrente ═══════════════════════ */
 
-function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
+function sincronizarRotinas_(rotinas, nomeCategoria) {
   let ops = 0;
   rotinas.forEach((r) => {
     try {
@@ -107,7 +181,7 @@ function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
 
       if (semConteudo) {
         if (r.agendaEventoId) {
-          apagarSerieSeExistir_(cal, r.agendaEventoId);
+          apagarEventoSeExistir_(r.agendaEventoId);
           fsPatch_("rotinas", r.__id, { agendaEventoId: null, agendaHash: null });
           ops++;
         }
@@ -115,29 +189,12 @@ function sincronizarRotinas_(cal, rotinas, nomeCategoria) {
       }
 
       const hash = assinaturaRotina_(r);
-      if (r.agendaEventoId && r.agendaHash === hash) return;
-
-      // recriar em vez de editar: o CalendarApp não tem como mudar horário ou
-      // regra de recorrência de uma série já criada, só apagar e criar de novo
-      if (r.agendaEventoId) apagarSerieSeExistir_(cal, r.agendaEventoId);
-      const ev = eventoDaRotina_(r, nomeCategoria);
-      const novoId = criarSerieSemanal_(cal, ev);
-      /*
-        Grava o id ANTES de contar sucesso. Se fsPatch_ falhar aqui, a série
-        já nasceu no Calendar e ninguém vai saber o id dela — a rodada
-        seguinte, 15 minutos depois, acharia que a rotina não tem evento e
-        criaria outra. Mesmo mecanismo do agenda.js (antecipacao.md E9):
-        efeito externo sem registro vira duplicata por rodada. Por isso o
-        try/catch desfaz a série recém-criada antes de propagar o erro.
-      */
-      try {
-        fsPatch_("rotinas", r.__id, { agendaEventoId: novoId, agendaHash: hash });
-      } catch (errPatch) {
-        apagarSerieSeExistir_(cal, novoId);
-        throw errPatch;
-      }
+      if (r.agendaEventoId && r.agendaHash === hash && !r.agendaEventoId.includes("@")) return;
+      salvarEvento_("rotinas", r.__id, r.agendaEventoId, eventoDaRotina_(r, nomeCategoria),
+        (id) => ({ agendaEventoId: id, agendaHash: hash }));
       ops++;
     } catch (err) {
+      falhasDaRodada++;
       // uma rotina com problema não pode travar as outras — loga e segue
       Logger.log("AppRotina: falhou a rotina %s (%s) — %s", r.__id, r.nome, err);
     }
@@ -166,28 +223,18 @@ function eventoDaRotina_(rotina, nomeCategoria) {
     })
     .filter(Boolean);
   return {
-    titulo: rotina.nome,
-    descricao: [lista.join("\n"), "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
-    inicio: dataHoraSP_(inicio, rotina.hora, 0),
-    fim: dataHoraSP_(inicio, rotina.hora, dur),
-    diasSemana: dias,
+    summary: rotina.nome,
+    description: [lista.join("\n"), "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
+    start: horarioEvento_(inicio, rotina.hora, 0),
+    end: horarioEvento_(inicio, rotina.hora, dur),
+    recurrence: [`RRULE:FREQ=WEEKLY;BYDAY=${dias.map((d) => BYDAY[d]).join(",")}`],
+    reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 0 }, { method: "popup", minutes: 10 }] },
   };
-}
-
-function criarSerieSemanal_(cal, ev) {
-  const recorrencia = CalendarApp.newRecurrence().addWeeklyRule()
-    .onlyOnWeekdays(ev.diasSemana.map((d) => WEEKDAYS[d]));
-  const serie = cal.createEventSeries(ev.titulo, ev.inicio, ev.fim, recorrencia);
-  serie.setDescription(ev.descricao);
-  serie.removeAllReminders();
-  serie.addPopupReminder(0);
-  serie.addPopupReminder(10);
-  return serie.getId();
 }
 
 /* ═══════════════════════ tarefa avulsa → evento único ═══════════════════════ */
 
-function sincronizarTarefasAvulsas_(cal, tarefas, nomeCategoria, hoje) {
+function sincronizarTarefasAvulsas_(tarefas, nomeCategoria, hoje) {
   let ops = 0;
   tarefas.forEach((t) => {
     try {
@@ -196,7 +243,7 @@ function sincronizarTarefasAvulsas_(cal, tarefas, nomeCategoria, hoje) {
       // descartada: o compromisso deixou de existir, sai da agenda
       if (t.estado === "descartada") {
         if (t.agendaEventoId) {
-          apagarEventoSeExistir_(cal, t.agendaEventoId);
+          apagarEventoSeExistir_(t.agendaEventoId);
           fsPatch_("tarefas", t.__id, { agendaEventoId: null, agendaHash: null });
           ops++;
         }
@@ -206,24 +253,12 @@ function sincronizarTarefasAvulsas_(cal, tarefas, nomeCategoria, hoje) {
       if (t.data < hoje && !t.agendaEventoId) return; // passado nunca sincronizado, ignora
 
       const hash = assinaturaTarefa_(t);
-      if (t.agendaEventoId && t.agendaHash === hash) return;
-
-      if (t.agendaEventoId) apagarEventoSeExistir_(cal, t.agendaEventoId);
-      const ev = eventoDaTarefa_(t, nomeCategoria);
-      const evento = cal.createEvent(ev.titulo, ev.inicio, ev.fim, { description: ev.descricao });
-      evento.removeAllReminders();
-      evento.addPopupReminder(0);
-      evento.addPopupReminder(10);
-      // mesmo cuidado de sincronizarRotinas_: desfaz o evento se não
-      // conseguir gravar o id, senão vira duplicata na rodada seguinte
-      try {
-        fsPatch_("tarefas", t.__id, { agendaEventoId: evento.getId(), agendaHash: hash });
-      } catch (errPatch) {
-        apagarEventoSeExistir_(cal, evento.getId());
-        throw errPatch;
-      }
+      if (t.agendaEventoId && t.agendaHash === hash && !t.agendaEventoId.includes("@")) return;
+      salvarEvento_("tarefas", t.__id, t.agendaEventoId, eventoDaTarefa_(t, nomeCategoria),
+        (id) => ({ agendaEventoId: id, agendaHash: hash }));
       ops++;
     } catch (err) {
+      falhasDaRodada++;
       Logger.log("AppRotina: falhou a tarefa avulsa %s (%s) — %s", t.__id, t.titulo, err);
     }
   });
@@ -234,16 +269,17 @@ function eventoDaTarefa_(t, nomeCategoria) {
   const dur = Number(t.duracaoMin) || 30;
   const cat = nomeCategoria(t.categoriaId);
   return {
-    titulo: t.titulo,
-    descricao: [cat ? `Categoria: ${cat}` : "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
-    inicio: dataHoraSP_(t.data, t.hora, 0),
-    fim: dataHoraSP_(t.data, t.hora, dur),
+    summary: t.titulo,
+    description: [cat ? `Categoria: ${cat}` : "", "Lançado pelo AppRotina."].filter(Boolean).join("\n"),
+    start: horarioEvento_(t.data, t.hora, 0),
+    end: horarioEvento_(t.data, t.hora, dur),
+    reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 0 }, { method: "popup", minutes: 10 }] },
   };
 }
 
 /* ═══════════════════════ atrasada pendente → cobrança diária ═══════════════════════ */
 
-function sincronizarAtrasadas_(cal, tarefas, nomeCategoria, hoje) {
+function sincronizarAtrasadas_(tarefas, nomeCategoria, hoje) {
   let ops = 0;
   tarefas.forEach((t) => {
     try {
@@ -251,7 +287,7 @@ function sincronizarAtrasadas_(cal, tarefas, nomeCategoria, hoje) {
 
       if (!atrasada) {
         if (t.agendaAtrasoId) {
-          apagarSerieSeExistir_(cal, t.agendaAtrasoId);
+          apagarEventoSeExistir_(t.agendaAtrasoId);
           fsPatch_("tarefas", t.__id, { agendaAtrasoId: null, agendaAtrasoAte: null });
           ops++;
         }
@@ -259,24 +295,20 @@ function sincronizarAtrasadas_(cal, tarefas, nomeCategoria, hoje) {
       }
 
       // série ainda cobrindo os próximos dias: nada a fazer
-      if (t.agendaAtrasoId && t.agendaAtrasoAte && t.agendaAtrasoAte >= hoje) return;
-
-      if (t.agendaAtrasoId) apagarSerieSeExistir_(cal, t.agendaAtrasoId);
-      const ev = eventoDeAtraso_(t, nomeCategoria, hoje);
-      const recorrencia = CalendarApp.newRecurrence().addDailyRule().times(DIAS_COBRANCA);
-      const serie = cal.createEventSeries(ev.titulo, ev.inicio, ev.fim, recorrencia);
-      serie.setDescription(ev.descricao);
-      serie.removeAllReminders();
-      serie.addPopupReminder(0);
-      // mesmo cuidado das duas funções acima: desfaz se não conseguir gravar
-      try {
-        fsPatch_("tarefas", t.__id, { agendaAtrasoId: serie.getId(), agendaAtrasoAte: ev.cobreAte });
-      } catch (errPatch) {
-        apagarSerieSeExistir_(cal, serie.getId());
-        throw errPatch;
+      if (t.agendaAtrasoId && t.agendaAtrasoAte && t.agendaAtrasoAte >= hoje) {
+        if (t.agendaAtrasoId.includes("@")) {
+          const id = resolverEventoId_(t.agendaAtrasoId);
+          if (!id) throw new Error("Cobrança antiga não encontrada na agenda.");
+          fsPatch_("tarefas", t.__id, { agendaAtrasoId: id });
+        }
+        return;
       }
+      const ev = eventoDeAtraso_(t, nomeCategoria, hoje);
+      salvarEvento_("tarefas", t.__id, t.agendaAtrasoId, ev.evento,
+        (id) => ({ agendaAtrasoId: id, agendaAtrasoAte: ev.cobreAte }));
       ops++;
     } catch (err) {
+      falhasDaRodada++;
       Logger.log("AppRotina: falhou a cobrança da tarefa %s (%s) — %s", t.__id, t.titulo, err);
     }
   });
@@ -291,15 +323,19 @@ function eventoDeAtraso_(t, nomeCategoria, hoje) {
   const inicio = horaEmMinutos_(t.hora) > agoraMin + 2 ? hoje : somarDiasISO_(hoje, 1);
   const cat = nomeCategoria(t.categoriaId);
   return {
-    titulo: `Atrasada · ${t.titulo}`,
-    descricao: [
-      `Era pra ter sido feita em ${formatarDataBR_(t.data)} às ${t.hora || "--:--"}.`,
-      cat ? `Categoria: ${cat}` : "",
-      "",
-      "A cobrança para quando você concluir ou descartar no AppRotina.",
-    ].filter(Boolean).join("\n"),
-    inicio: dataHoraSP_(inicio, t.hora, 0),
-    fim: dataHoraSP_(inicio, t.hora, 15),
+    evento: {
+      summary: `Atrasada · ${t.titulo}`,
+      description: [
+        `Era pra ter sido feita em ${formatarDataBR_(t.data)} às ${t.hora || "--:--"}.`,
+        cat ? `Categoria: ${cat}` : "",
+        "",
+        "A cobrança para quando você concluir ou descartar no AppRotina.",
+      ].filter(Boolean).join("\n"),
+      start: horarioEvento_(inicio, t.hora, 0),
+      end: horarioEvento_(inicio, t.hora, 15),
+      recurrence: [`RRULE:FREQ=DAILY;COUNT=${DIAS_COBRANCA}`],
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 0 }] },
+    },
     cobreAte: somarDiasISO_(inicio, DIAS_COBRANCA - 1),
   };
 }
@@ -317,22 +353,60 @@ function assinaturaTarefa_(t) {
   return JSON.stringify([t.titulo, t.data, t.hora, t.duracaoMin || 30, t.categoriaId || ""]);
 }
 
-/* ═══════════════════════ Google Agenda: apagar com segurança ═══════════════════════ */
-/* Um id que não existe mais na agenda (já apagado na mão, por exemplo) não
-   pode travar a sincronização inteira — só loga e segue. */
-
-function apagarSerieSeExistir_(cal, id) {
-  try {
-    const serie = cal.getEventSeriesById(id);
-    if (serie) serie.deleteEventSeries();
-  } catch (err) { Logger.log("Série %s não encontrada pra apagar (%s).", id, err); }
+/* O navegador e o gatilho usam o mesmo id da Calendar API. CalendarApp
+   devolvia iCalUID; o legado é resolvido por list, nunca por tentativa de
+   recriar um evento que pode continuar existindo. */
+function calendarFetch_(metodo, caminho, corpo, base = CALENDAR_API) {
+  if (!tokenCalendarAtual && contaUsaOAuth) throw new Error("Conta sem acesso autorizado ao Google Agenda.");
+  const options = {
+    method: metodo, headers: { Authorization: `Bearer ${tokenCalendarAtual || ScriptApp.getOAuthToken()}` },
+    muteHttpExceptions: true,
+  };
+  if (corpo) { options.contentType = "application/json"; options.payload = JSON.stringify(corpo); }
+  const resp = UrlFetchApp.fetch(base + caminho, options);
+  const status = resp.getResponseCode();
+  if (status === 404 || status === 410) return { ausente: true };
+  const texto = resp.getContentText();
+  if (status >= 300) throw new Error(`Google Agenda ${status}: ${texto.slice(0, 300)}`);
+  return texto ? JSON.parse(texto) : {};
 }
 
-function apagarEventoSeExistir_(cal, id) {
+function conferirContaAgenda_() {
+  if (contaUsaOAuth) {
+    calendarFetch_("get", "?maxResults=1");
+    return;
+  }
+  const calendario = calendarFetch_("get", "", null, CALENDAR_API.replace(/\/events$/, ""));
+  if (String(calendario.id || "").toLowerCase() !== emailAgendaAtual) {
+    throw new Error("A conta Google que autorizou o script não é a dona dos dados. Autorize com a conta configurada em EMAIL_DONO.");
+  }
+}
+
+function resolverEventoId_(id) {
+  if (!id || !id.includes("@")) return id || null;
+  const lista = calendarFetch_("get", `?iCalUID=${encodeURIComponent(id)}&singleEvents=false&showDeleted=false`);
+  const itens = (lista.items || []).filter((e) => e.status !== "cancelled");
+  if (lista.nextPageToken || itens.length > 1) throw new Error("Identificador antigo encontrou mais de um evento. Confira a agenda antes de sincronizar.");
+  return itens.length ? itens[0].id : null;
+}
+
+function apagarEventoSeExistir_(id) {
+  const resolvido = resolverEventoId_(id);
+  if (resolvido) calendarFetch_("delete", `/${encodeURIComponent(resolvido)}`);
+}
+
+function salvarEvento_(colecao, docId, idAtual, evento, campos) {
+  const id = resolverEventoId_(idAtual);
+  const resposta = id ? calendarFetch_("patch", `/${encodeURIComponent(id)}`, evento) : { ausente: true };
+  const criado = !!resposta.ausente;
+  const salvo = criado ? calendarFetch_("post", "", evento) : resposta;
+  if (!salvo.id) throw new Error("Google Agenda: resposta sem identificador do evento.");
   try {
-    const evento = cal.getEventById(id);
-    if (evento) evento.deleteEvent();
-  } catch (err) { Logger.log("Evento %s não encontrado pra apagar (%s).", id, err); }
+    fsPatch_(colecao, docId, campos(salvo.id));
+  } catch (err) {
+    if (criado) apagarEventoSeExistir_(salvo.id);
+    throw err;
+  }
 }
 
 /* ═══════════════════════ datas (fuso fixo, nunca o default do runtime) ═══════════════════════ */
@@ -380,6 +454,10 @@ function dataHoraSP_(dataISO, hora, somarMin) {
   const [h, mi] = String(hora || "08:00").split(":").map(Number);
   const ms = Date.UTC(y, m - 1, d, h || 0, (mi || 0) + (somarMin || 0), 0) + OFFSET_SP_MS;
   return new Date(ms);
+}
+
+function horarioEvento_(dataISO, hora, somarMin) {
+  return { dateTime: dataHoraSP_(dataISO, hora, somarMin).toISOString(), timeZone: TZ };
 }
 
 function criarNomeCategoria_(categorias) {
@@ -455,7 +533,15 @@ function fsPatch_(colecao, id, campos) {
   const fields = {};
   Object.keys(campos).forEach((k) => { fields[k] = paraValorFirestore_(campos[k]); });
   const mask = Object.keys(campos).map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join("&");
-  fsFetch_(`${ESPACO}/${colecao}/${id}?${mask}`, { method: "patch", payload: { fields } });
+  fsFetch_(`${ESPACO}/${colecao}/${id}?${mask}&currentDocument.exists=true`, { method: "patch", payload: { fields } });
+}
+
+// Estado operacional: só o servidor escreve; o aplicativo apenas consulta.
+function fsConfigPatch_(campos) {
+  const fields = {};
+  Object.keys(campos).forEach((k) => { fields[k] = paraValorFirestore_(campos[k]); });
+  const mask = Object.keys(campos).map((k) => `updateMask.fieldPaths=${encodeURIComponent(k)}`).join("&");
+  fsFetch_(`${ESPACO}/config/agenda?${mask}`, { method: "patch", payload: { fields } });
 }
 
 function fsDocParaObjeto_(doc) {

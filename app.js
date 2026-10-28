@@ -42,19 +42,21 @@
   abertura e derrubou a cota diária gratuita em produção.
 */
 
-import { db, auth, configurado } from "./firebase-init.js?v=12";
+import { db, auth, configurado } from "./firebase-init.js?v=13";
 import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
   onSnapshot, query, where, writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
-import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=12";
+import { montarTelaLogin, montarTelaConfirmacao, observarSessao, sair } from "./auth.js?v=13";
 import {
   agendaConfigurada, agendaConectada, agendaJaAutorizada,
   conectarAgenda, desconectarAgenda, sincronizarAgenda, apagarEventosDe, aoMudarAgenda,
-  diagnosticoAgenda, procurarEventosOrfaos, apagarOrfaos,
-} from "./agenda.js?v=12";
-import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=12";
+  diagnosticoAgenda, carregarStatusAgenda, agendaPermanenteDisponivel, conectarAgendaPermanente,
+  procurarEventosOrfaos, apagarOrfaos,
+} from "./agenda.js?v=13";
+import { carregarPush, diagnosticoPush, ativarPush, desativarPush, aoMudarPush } from "./push.js?v=13";
+import { DIAGNOSTICO_SESSAO } from "./firebase-init.js?v=13";
 import {
   esc, toast, abrirModal, fecharModal, confirmar, emSegundoPlano,
   iniciarNavegacao, iniciarBannerInstalacao, registrarListener, desligarListeners,
@@ -62,7 +64,7 @@ import {
   ICONS, parseDataLocal, isoLocal, hojeISO, somarDiasISO, diffDiasISO,
   diaSemanaISO, nomeDiaSemana, curtoDiaSemana, diaMes, rotuloDia, maiusculaInicial,
   horaEmMinutos, gerarId, slugId, fmtDataHora,
-} from "./shared.js?v=12";
+} from "./shared.js?v=13";
 
 const DIAS_JANELA = 90;   // recorte da escuta de histórico recente
 const MAX_RECUPERACAO = 45; // teto de dias que o lançamento recupera de uma vez
@@ -241,9 +243,17 @@ async function entrar(user) {
     ligarEventos();
     iniciarBannerInstalacao();
     aoMudarAgenda(atualizarLinhaAgenda);
+    aoMudarPush(atualizarAvisosAparelho);
+    const conferirAgendaAoVoltar = () => {
+      if (STATE.user && !document.hidden) carregarStatusAgenda(STATE.user.email).catch(() => {});
+    };
+    window.addEventListener("focus", conferirAgendaAoVoltar);
+    document.addEventListener("visibilitychange", conferirAgendaAoVoltar);
     vigiarViradaDoDia();
   }
   renderPerfil();
+  carregarPush(user).catch(() => {});
+  carregarStatusAgenda(user.email).catch((err) => console.error("[agenda] não foi possível conferir a sincronização", err));
   // migra antes de escutar, senão as escutas abririam num espaço ainda vazio.
   // Qualquer falha aqui não pode impedir o app de abrir.
   try { await migrarParaEspacoDoUsuario(); } catch (err) { console.error(err); }
@@ -1724,8 +1734,15 @@ function atualizarLinhaAgenda() {
     + avulsas.filter((t) => !t.agendaEventoId).length
     + atrasadas.filter((t) => !t.agendaAtrasoId).length;
 
-  if (!agendaConfigurada()) sub.textContent = "indisponível no momento";
-  else if (!agendaConectada() && !agendaJaAutorizada()) sub.textContent = "não conectado, nada é lançado";
+  const d = diagnosticoAgenda();
+  if (d.erroStatus) sub.textContent = "não foi possível conferir a conexão";
+  else if (d.servidor?.servidorAtivo) sub.textContent = d.servidor.ultimoErro
+    ? "sincronização automática com erro"
+    : `automático, a cada ${d.servidor.intervaloMinutos} minutos`;
+  else if (!d.servidor) sub.textContent = "conferindo conexão";
+  else if (agendaPermanenteDisponivel()) sub.textContent = "conexão automática disponível";
+  else if (!agendaConfigurada()) sub.textContent = "indisponível no momento";
+  else if (!agendaConectada()) sub.textContent = agendaJaAutorizada() ? "precisa reconectar nesta sessão" : "não conectado, nada é lançado";
   else if (faltando) sub.textContent = `${faltando} item(ns) fora da agenda`;
   else sub.textContent = "tudo sincronizado";
 
@@ -1824,9 +1841,13 @@ function nomeCor(hex) {
   return { "#02AD58": "Verde", "#A867FF": "Violeta", "#C48001": "Âmbar", "#0A9DD3": "Azul", "#FF3457": "Vermelho", "#0CA5A7": "Turquesa" }[hex] || hex;
 }
 
-function modalAgenda() {
+async function modalAgenda() {
+  try { await carregarStatusAgenda(emailDono()); } catch (_) {}
   const d = diagnosticoAgenda();
-  const conectada = d.conectada || d.autorizada;
+  const conectada = d.conectada;
+  const servidor = d.servidor?.servidorAtivo;
+  const permanenteDisponivel = agendaPermanenteDisponivel() && (!servidor || !!d.servidor.ultimoErro);
+  const ultimaSinc = servidor ? d.servidor.ultimaSinc : d.ultimaSinc;
   const ativas = STATE.rotinas.filter((r) => r.ativa);
   const rotOk = ativas.filter((r) => r.agendaEventoId).length;
 
@@ -1849,18 +1870,38 @@ function modalAgenda() {
     </div>`;
 
   abrirModal("Google Agenda",
-    `${!d.configurada ? `
+    `${servidor ? `
+      <div class="aviso info">
+        <span class="ico">${ICONS.info}</span>
+        <span>A sincronização automática está ativa. As mudanças chegam ao Google Agenda em até
+        ${d.servidor.intervaloMinutos} minutos, mesmo com o AppRotina fechado. Você não precisa reconectar a cada abertura.</span>
+      </div>` : ""}
+     ${permanenteDisponivel ? `
+      <div class="aviso info">
+        <span class="ico">${ICONS.info}</span>
+        <span>${servidor ? "Reconecte" : "Conecte"} sua conta para enviar as mudanças ao Google Agenda automaticamente, mesmo com o AppRotina fechado.</span>
+      </div>
+      <button type="button" class="btn primary bloco" id="a-permanente" style="margin-top:12px;">${servidor ? "Reconectar automaticamente" : "Conectar automaticamente"}</button>` : ""}
+     ${d.erroStatus ? `
+      <div class="aviso"><span class="ico">${ICONS.alerta}</span><span>${esc(d.erroStatus)}</span></div>` : ""}
+     ${servidor && d.servidor.ultimoErro ? `
+      <div class="aviso">
+        <span class="ico">${ICONS.alerta}</span>
+        <span>A sincronização automática encontrou um erro: ${esc(d.servidor.ultimoErro)}. Suas mudanças continuam salvas no AppRotina.</span>
+      </div>` : ""}
+     ${!servidor && !d.configurada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
         <span>A conexão com o Google Agenda não está disponível no momento.</span>
       </div>` : ""}
-     ${d.configurada && !conectada ? `
+     ${d.servidor && !servidor && d.configurada && !conectada ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
-        <span>Você ainda não conectou sua agenda. Enquanto isso, nada é lançado
-        no Google Agenda — toque em "Conectar" pra começar.</span>
+        <span>${d.autorizada
+          ? 'O acesso ao Google Agenda desta sessão expirou. Toque em "Reconectar" para enviar suas mudanças.'
+          : 'Você ainda não conectou sua agenda. Toque em "Conectar" para enviar suas mudanças ao Google Agenda.'}</span>
       </div>` : ""}
-     ${d.ultimoErro ? `
+     ${!servidor && d.ultimoErro ? `
       <div class="aviso">
         <span class="ico">${ICONS.alerta}</span>
         <span>A última sincronização não foi concluída
@@ -1869,24 +1910,31 @@ function modalAgenda() {
         Tente de novo em "Sincronizar agora"; se continuar, desconecte e conecte
         a agenda outra vez.</span>
       </div>` : ""}
-     ${conectada && !faltando && !d.ultimoErro ? `
+     ${!servidor && conectada && !faltando && !d.ultimoErro ? `
       <div class="aviso info">
         <span class="ico">${ICONS.info}</span>
         <span>Tudo que devia estar na agenda está.</span>
       </div>` : ""}
 
      <div class="dado-linha"><span class="rot">Situação</span><span class="val">${
-       d.conectada || d.autorizada ? "conectado" : "não conectado"
+       servidor ? "sincronização automática" : d.erroStatus ? "não foi possível conferir" : conectada ? "conectado nesta sessão" : d.autorizada ? "precisa reconectar" : "não conectado"
      }</span></div>
      ${linha("Rotinas com evento recorrente", rotOk, ativas.length)}
      ${linha("Tarefas avulsas de hoje em diante", avulsasOk, avulsas.length)}
      ${linha("Atrasadas com cobrança diária", atrasadasOk, atrasadas.length)}
      <div class="dado-linha">
        <span class="rot">Última sincronização</span>
-       <span class="val num">${d.ultimaSinc ? esc(new Date(d.ultimaSinc).toLocaleTimeString("pt-BR")) : "ainda não"}</span>
+       <span class="val num">${ultimaSinc ? esc(new Date(ultimaSinc).toLocaleString("pt-BR")) : "ainda não"}</span>
      </div>
-     ${conectada ? `<button type="button" class="btn danger bloco" id="a-desconectar" style="margin-top:14px;">Desconectar do Google Agenda</button>` : ""}
+     ${!servidor && (conectada || d.autorizada) ? `<button type="button" class="btn danger bloco" id="a-desconectar" style="margin-top:14px;">Desconectar do Google Agenda</button>` : ""}
+     ${servidor && agendaPermanenteDisponivel() ? `<button type="button" class="btn danger bloco" id="a-desconectar-automatico" style="margin-top:14px;">Desconectar sincronização automática</button>` : ""}
 
+     <section style="margin-top:20px;" aria-label="Avisos neste aparelho">
+       <strong>Avisos do AppRotina neste aparelho</strong>
+       <p id="push-status" class="sub" role="status"></p>
+       <button type="button" class="btn bloco" id="push-ativar" hidden></button>
+       <p class="sub">São independentes dos avisos do Google Agenda. Novas atividades podem levar alguns minutos para entrar nos lembretes.</p>
+     </section>
      <div class="aviso info" style="margin-top:14px;">
        <span class="ico">${ICONS.info}</span>
        <span><strong>Rotina</strong> vira um evento semanal que notifica pra sempre,
@@ -1896,14 +1944,36 @@ function modalAgenda() {
        <strong>Atrasada</strong> vira uma série diária de 14 dias no horário original,
        e essa para de cobrar quando você conclui ou descarta.<br><br>
        Os lembretes tocam pelo próprio Google Agenda, mesmo com o app fechado.
-       O que muda aqui chega lá quando você abre o app, ou agora mesmo em
-       "Sincronizar agora".</span>
+       ${servidor
+         ? `O que muda aqui chega lá em até ${d.servidor.intervaloMinutos} minutos.`
+         : 'Sem a sincronização automática instalada, o acesso desta sessão dura cerca de uma hora. Depois disso é preciso reconectar para enviar novas mudanças.'}</span>
      </div>`,
-    `${conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
-     <button type="button" class="btn primary" id="a-sinc">${conectada ? "Sincronizar agora" : "Conectar"}</button>`
+    `${!servidor && conectada ? `<button type="button" class="btn" id="a-limpar">Procurar duplicatas</button>` : `<span></span>`}
+     <button type="button" class="btn primary" id="a-sinc">${servidor ? "Atualizar situação" : d.erroStatus ? "Tentar novamente" : conectada ? "Sincronizar agora" : d.autorizada ? "Reconectar" : "Conectar"}</button>`
   );
 
   $("a-limpar")?.addEventListener("click", modalOrfaos);
+  atualizarAvisosAparelho();
+  $("push-ativar").addEventListener("click", async () => {
+    const botao = $("push-ativar");
+    botao.disabled = true;
+    try {
+      if (diagnosticoPush().ativa) await desativarPush();
+      else await ativarPush();
+    } catch (_) {
+      toast("Não foi possível alterar os avisos neste aparelho. Tente novamente.", "erro");
+    } finally { atualizarAvisosAparelho(); }
+  });
+  $("a-permanente")?.addEventListener("click", () => {
+    // O popup precisa abrir diretamente neste clique, antes de qualquer await.
+    conectarAgendaPermanente();
+  });
+  $("a-desconectar-automatico")?.addEventListener("click", async () => {
+    const ok = await confirmar("Desconectar a sincronização automática? Os eventos já criados continuam no Google Agenda. Novas mudanças deixam de ser enviadas automaticamente.", {
+      textoConfirmar: "Desconectar", textoCancelar: "Voltar",
+    });
+    if (ok) conectarAgendaPermanente("desconectar");
+  });
 
   $("a-desconectar")?.addEventListener("click", () => {
     desconectarAgenda();
@@ -1912,12 +1982,25 @@ function modalAgenda() {
   });
 
   $("a-sinc").addEventListener("click", async () => {
+    $("a-sinc").disabled = true;
     fecharModal();
-    if (!conectada && !(await conectarAgenda())) return;
+    if (servidor || d.erroStatus) { await modalAgenda(); return; }
+    if (!agendaConectada() && !(await conectarAgenda())) return;
     await sincronizarAgenda({
       rotinas: STATE.rotinas, tarefas: STATE.tarefas, nomeCategoria, email: emailDono(), silencioso: false,
     });
   });
+}
+
+function atualizarAvisosAparelho() {
+  const status = $("push-status"), botao = $("push-ativar");
+  if (!status || !botao) return;
+  const d = diagnosticoPush();
+  status.textContent = d.mensagem;
+  botao.hidden = !d.disponivel || (!d.ativa && d.permissao === "denied");
+  botao.style.display = botao.hidden ? "none" : "";
+  botao.disabled = false;
+  botao.textContent = d.ativa ? "Desativar avisos neste aparelho" : "Ativar avisos neste aparelho";
 }
 
 /*
@@ -2041,7 +2124,14 @@ function ligarEventos() {
   $("cfg-sobre").addEventListener("click", () => { fecharDrawer(); modalSobre(); });
   $("cfg-sair").addEventListener("click", async () => {
     fecharDrawer();
-    if (await confirmar("Sair da sua conta?", { textoConfirmar: "Sair", perigo: false })) await sair();
+    if (await confirmar("Sair da sua conta?", { textoConfirmar: "Sair", perigo: false })) {
+      try {
+        await desativarPush();
+        await sair();
+      } catch (_) {
+        toast("Não foi possível encerrar os avisos deste aparelho. Tente sair novamente.", "erro");
+      }
+    }
   });
 
   $("seg-periodo").querySelectorAll("[data-dias]").forEach((b) => {

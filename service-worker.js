@@ -15,7 +15,7 @@
 */
 
 const PREFIXO = "rot-";
-const CACHE_NAME = `${PREFIXO}v12`; // sobe a cada mudança relevante de asset
+const CACHE_NAME = `${PREFIXO}v13`; // sobe a cada mudança relevante de asset
 /*
   TODO módulo local leva ?v= igual, inclusive os que só aparecem como import
   dentro de outro arquivo (crença 7). Aprendido na marra em 2026-09-18: só o
@@ -32,13 +32,14 @@ const CACHE_NAME = `${PREFIXO}v12`; // sobe a cada mudança relevante de asset
 const SHELL = [
   "./",
   "./index.html",
-  "./style.css?v=12",
-  "./app.js?v=12",
-  "./shared.js?v=12",
-  "./auth.js?v=12",
-  "./agenda.js?v=12",
-  "./firebase-init.js?v=12",
-  "./manifest.json?v=12",
+  "./style.css?v=13",
+  "./app.js?v=13",
+  "./shared.js?v=13",
+  "./auth.js?v=13",
+  "./agenda.js?v=13",
+  "./push.js?v=13",
+  "./firebase-init.js?v=13",
+  "./manifest.json?v=13",
 ];
 
 self.addEventListener("install", (e) => {
@@ -95,4 +96,41 @@ self.addEventListener("fetch", (e) => {
       // fallback lido SÓ do cache deste app, nunca caches.match() global
       .catch(() => caches.open(CACHE_NAME).then((c) => c.match(e.request)))
   );
+});
+
+function destinoDaNotificacao(valor) {
+  const base = new URL("./", self.location.href);
+  const padrao = new URL("index.html", base);
+  try {
+    const alvo = new URL(valor || "index.html", base);
+    if (alvo.origin === base.origin && alvo.pathname.startsWith(base.pathname)) return alvo.href;
+  } catch (_) {}
+  return padrao.href;
+}
+
+self.addEventListener("push", (event) => {
+  let dados = {};
+  try { const payload = event.data?.json() || {}; dados = payload.data || payload; } catch (_) {}
+  // No iPhone todo push recebido precisa produzir uma notificação visível.
+  event.waitUntil(self.registration.showNotification(dados.titulo || "AppRotina", {
+    body: dados.corpo || "Você tem uma atividade para este horário.",
+    icon: new URL("icon-192.png", self.registration.scope).href,
+    badge: new URL("favicon-32.png", self.registration.scope).href,
+    tag: dados.tag || undefined,
+    data: { url: destinoDaNotificacao(dados.url) },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const alvo = destinoDaNotificacao(event.notification.data?.url);
+  const base = new URL("./", self.location.href);
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (janelas) => {
+    const app = janelas.find((janela) => {
+      const url = new URL(janela.url);
+      return url.origin === base.origin && url.pathname.startsWith(base.pathname);
+    });
+    if (app) { await app.navigate(alvo); return app.focus(); }
+    return self.clients.openWindow(alvo);
+  }));
 });
