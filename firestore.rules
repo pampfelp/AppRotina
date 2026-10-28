@@ -154,6 +154,39 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      // Só o sincronizador autenticado pelo IAM publica este diagnóstico.
+      match /config/agenda {
+        allow read: if dono(email);
+        allow write: if false;
+      }
+
+      match /pushTokens/{id} {
+        allow read, delete: if dono(email);
+        allow create, update: if dono(email)
+          && id.matches('^[a-f0-9]{64}$')
+          && request.resource.data.keys().hasOnly(['token','atualizadoEm','fuso'])
+          && request.resource.data.keys().hasAll(['token','atualizadoEm','fuso'])
+          && textoCheio(request.resource.data.token, 4096)
+          && request.resource.data.atualizadoEm is int
+          && request.resource.data.atualizadoEm > 0
+          && textoCheio(request.resource.data.fuso, 100);
+      }
+
+      // O app registra a exclusão antes de remover a tarefa ou rotina.
+      // O servidor consome a fila; o navegador não altera pedidos já aceitos.
+      match /agendaExclusoes/{id} {
+        allow read: if dono(email);
+        allow create: if dono(email)
+          && request.resource.data.keys().hasOnly(['agendaEventoId','agendaAtrasoId','criadoEm'])
+          && request.resource.data.keys().hasAll(['agendaEventoId','agendaAtrasoId','criadoEm'])
+          && (request.resource.data.agendaEventoId == null || textoCheio(request.resource.data.agendaEventoId, 1024))
+          && (request.resource.data.agendaAtrasoId == null || textoCheio(request.resource.data.agendaAtrasoId, 1024))
+          && (request.resource.data.agendaEventoId != null || request.resource.data.agendaAtrasoId != null)
+          && request.resource.data.criadoEm is int
+          && request.resource.data.criadoEm > 0;
+        allow update, delete: if false;
+      }
+
       match /config/estado {
         allow read: if dono(email);
         allow create, update: if dono(email)
@@ -186,6 +219,12 @@ service cloud.firestore {
     match /rotinas/{id}    { allow read, delete: if legadoDoDono(); }
     match /tarefas/{id}    { allow read, delete: if legadoDoDono(); }
     match /config/{id}     { allow read, delete: if legadoDoDono(); }
+
+    // A chave pública de push não concede acesso aos dados nem envia avisos.
+    match /config/notificacoes {
+      allow read: if request.auth != null && request.auth.token.email_verified == true;
+      allow write: if false;
+    }
 
     // Nada fora do que está declarado acima.
     match /{documento=**} {

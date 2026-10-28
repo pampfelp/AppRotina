@@ -39,16 +39,18 @@ como feita, e aí o ranking passaria a mentir.
 
 ### Google Agenda
 
-**Dois caminhos, use os dois.** O navegador sincroniza sozinho quando o app
-está aberto (bom pra ver o efeito na hora), mas o token do Google que ele usa
-expira de hora em hora e só renova sozinho quando o navegador deixa — o que
-nem sempre acontece, e aí ele pede login de novo. O caminho que resolve de
-vez é o gatilho do **Apps Script** (pasta `apps-script/`, passo a passo em
-[`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md)): roda a cada 15 minutos
-na nuvem do Google, com o app fechado, sem popup — é o mesmo jeito que a
-Jornada do Milhão já usa. Uns 5 minutos pra instalar, só você consegue
-clicar. Sem ele, o app continua funcionando, só depende de você abrir ele
-(ou clicar em "Sincronizar agora") pra empurrar o que mudou pra agenda.
+**Uma autorização por pessoa.** Com o servidor configurado, use
+**Perfil › Configurações › Google Agenda › Conectar automaticamente**.
+Cada pessoa autoriza a mesma conta que usa no AppRotina. O Apps Script
+renova o acesso no servidor e envia as mudanças a cada 15 minutos, com o
+app fechado. A autorização pode ser revogada pelo Google ou pela pessoa;
+nesse caso a tela oferece reconexão. O acesso do proprietário não é usado
+para escrever na agenda de outra pessoa.
+
+O caminho temporário pelo navegador continua disponível como alternativa.
+Ele depende de um token desta sessão, que expira, e não garante envio com
+o aplicativo fechado. A tela distingue esse estado da conexão automática.
+O preparo do servidor está em [`apps-script/LEIA-ME.md`](apps-script/LEIA-ME.md).
 
 - Rotina ativa vira **um evento recorrente semanal**. Criado uma vez, notifica
   pra sempre, mesmo com o app fechado.
@@ -71,11 +73,29 @@ em **Perfil › Configurações › Google Agenda** tem a contagem por tipo
 (rotinas, avulsas, atrasadas), a hora da última sincronização e o último erro
 que a API devolveu, se houver.
 
-**O furo conhecido.** Uma tarefa que vence num dia em que você nunca abre o
-app só ganha a série de cobrança quando você abrir. As rotinas continuam
-notificando nesses dias, porque o evento recorrente não depende do app. Se
-isso incomodar, a saída é um Apps Script com gatilho por tempo, que fecha o
-furo e não está construído aqui.
+**Com o servidor ativo**, cobranças de tarefas já gravadas são atualizadas
+mesmo sem abrir o aplicativo. A criação das tarefas do checklist a partir
+das rotinas ainda ocorre no app; o evento semanal da rotina continua no
+Google Agenda independentemente dessa criação.
+
+### Avisos do próprio AppRotina
+
+No mesmo painel da agenda há a opção **Ativar avisos neste aparelho**.
+Ela é independente do Google Agenda e depende da configuração de push no
+servidor. No iPhone, abra o app adicionado à Tela de Início e autorize os
+avisos pelo botão. A permissão de cada aparelho não é compartilhada.
+
+O envio roda a cada minuto, com cache e recuperação de até cinco minutos.
+Atividades recém-criadas podem entrar com alguns minutos de atraso; a
+entrega também depende da conexão e dos ajustes do telefone. Tarefas são
+conferidas novamente antes do envio. Desativar os avisos é respeitado ao
+reabrir o app, e sair da conta invalida a inscrição daquele aparelho.
+
+### Verificação das integrações
+
+`node tests/run.mjs` executa as simulações de autorização, isolamento entre
+contas, recorrências, exclusões e push, sem acessar dados de produção.
+Esses testes não substituem a autorização Google e a entrega em telefone real.
 
 ---
 

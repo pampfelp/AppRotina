@@ -53,13 +53,13 @@
   dele, que pode ser nenhum.
 */
 
-import { db } from "./firebase-init.js?v=12";
-import { GOOGLE_CLIENT_ID } from "./firebase-init.js?v=12";
-import { doc, updateDoc } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
-import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js?v=12";
+import { db, auth } from "./firebase-init.js?v=13";
+import { GOOGLE_CLIENT_ID, AGENDA_SERVIDOR_URL } from "./firebase-init.js?v=13";
+import { doc, updateDoc, getDocFromServer, setDoc } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
+import { toast, parseDataLocal, hojeISO, somarDiasISO, isoLocal, horaEmMinutos } from "./shared.js?v=13";
 
 const API = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const ESCOPO = "https://www.googleapis.com/auth/calendar.events";
+const ESCOPO = "https://www.googleapis.com/auth/calendar.events openid email";
 const CHAVE_CONECTADO = "rot_agenda_conectada";
 const DIAS_COBRANCA = 14;      // tamanho da série diária de atrasada
 const MAX_OPS_POR_RODADA = 25; // teto por sincronização, pra não travar a tela
@@ -70,7 +70,11 @@ const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paul
 let tokenClient = null;
 let token = null;        // { valor, expiraEm }
 let gisPronto = false;
+let pedidoToken = null;
+let falharPedidoToken = null;
+let conectandoPermanente = false;
 let sincronizando = false;
+let emailStatus = null;
 const ouvintes = new Set();
 
 /*
@@ -80,7 +84,7 @@ const ouvintes = new Set();
 */
 let avisouTokenNaSessao = false;
 let avisouErroNaSessao = false;
-const DIAG = { ultimoErro: null, ultimaSinc: null, ultimasOps: 0, faltouToken: false };
+const DIAG = { ultimoErro: null, ultimaSinc: null, ultimasOps: 0, faltouToken: false, servidor: null, erroStatus: null };
 export function diagnosticoAgenda() {
   return { ...DIAG, configurada: agendaConfigurada(), conectada: agendaConectada(), autorizada: agendaJaAutorizada() };
 }
@@ -92,12 +96,112 @@ export function agendaConfigurada() {
   return !String(GOOGLE_CLIENT_ID).includes("COLE_AQUI");
 }
 
+export function agendaPermanenteDisponivel() {
+  return /^https:\/\/script\.google\.com\/macros\/s\/[^/?#]+\/exec$/.test(AGENDA_SERVIDOR_URL);
+}
+
+/** Abre a janela no clique; o token Firebase segue só no corpo do POST. */
+export async function conectarAgendaPermanente(action = "conectar") {
+  if (action !== "conectar" && action !== "desconectar") return false;
+  if (!agendaPermanenteDisponivel()) {
+    toast("A conexão automática ainda não está disponível.", "erro");
+    return false;
+  }
+  const usuario = auth.currentUser;
+  if (!usuario?.email || !usuario.emailVerified) {
+    toast("Entre na sua conta com e-mail confirmado para conectar a agenda.", "erro");
+    return false;
+  }
+  const uidPedido = usuario.uid;
+  const emailPedido = usuario.email;
+  if (conectandoPermanente) return false;
+  const janela = window.open("about:blank", "rot-agenda-conectar");
+  if (!janela) {
+    toast("A janela do Google foi bloqueada. Abra o AppRotina no Safari e permita a abertura da janela para conectar automaticamente.", "erro", 10000);
+    return false;
+  }
+  conectandoPermanente = true;
+  let formulario;
+  try {
+    const idToken = await usuario.getIdToken();
+    if (!auth.currentUser || auth.currentUser.uid !== uidPedido || auth.currentUser.email !== emailPedido) {
+      throw new Error("conta-alterada");
+    }
+    if (janela.closed) throw new Error("janela-fechada");
+    formulario = document.createElement("form");
+    formulario.method = "POST";
+    formulario.action = AGENDA_SERVIDOR_URL;
+    formulario.target = "rot-agenda-conectar";
+    formulario.hidden = true;
+    for (const [name, value] of Object.entries({ action, idToken })) {
+      const campo = document.createElement("input");
+      campo.type = "hidden";
+      campo.name = name;
+      campo.value = value;
+      formulario.appendChild(campo);
+    }
+    document.body.appendChild(formulario);
+    formulario.submit();
+    toast(action === "conectar"
+      ? "Continue na janela aberta para autorizar o Google Agenda. Ao terminar, volte ao AppRotina."
+      : "Confira o resultado na janela aberta e volte ao AppRotina para atualizar a situação da conexão.", "info", 9000);
+    return true;
+  } catch (_) {
+    janela.close();
+    toast("Não foi possível iniciar a conexão automática. Confira sua conta e tente novamente.", "erro", 9000);
+    return false;
+  } finally {
+    formulario?.remove();
+    conectandoPermanente = false;
+  }
+}
+
 export function agendaConectada() {
   return !!token && token.expiraEm > Date.now() + 30000;
 }
 
 export function agendaJaAutorizada() {
   return localStorage.getItem(CHAVE_CONECTADO) === "1";
+}
+
+/** O status precisa vir do servidor: cache antigo não pode liberar dois sincronizadores. */
+export async function carregarStatusAgenda(email = auth.currentUser?.email) {
+  const dono = String(email || "").toLowerCase();
+  if (!dono || dono !== String(auth.currentUser?.email || "").toLowerCase()) {
+    throw new Error("Entre na sua conta para conferir a conexão com o Google Agenda.");
+  }
+  if (emailStatus !== dono) {
+    token = null;
+    DIAG.servidor = null;
+    DIAG.ultimoErro = null;
+    DIAG.ultimaSinc = null;
+    DIAG.faltouToken = false;
+    emailStatus = dono;
+  }
+  try {
+    const snap = await getDocFromServer(doc(db, "usuarios", dono, "config", "agenda"));
+    if (emailStatus !== dono || dono !== String(auth.currentUser?.email || "").toLowerCase()) {
+      throw new Error("A conta mudou. Confira a conexão novamente.");
+    }
+    const dados = snap.exists() ? snap.data() : {};
+    DIAG.servidor = {
+      servidorAtivo: dados.servidorAtivo === true,
+      intervaloMinutos: Number(dados.intervaloMinutos) || 15,
+      ultimaSinc: Number(dados.ultimaSinc) || null,
+      ultimoErro: typeof dados.ultimoErro === "string" ? dados.ultimoErro : "",
+    };
+    DIAG.erroStatus = null;
+    if (!DIAG.servidor.servidorAtivo) montarTokenClient().catch(() => {});
+    avisar();
+    return { ...DIAG.servidor };
+  } catch (err) {
+    if (emailStatus === dono) {
+      DIAG.servidor = null;
+      DIAG.erroStatus = "Não foi possível conferir a sincronização automática. Verifique sua conexão e tente novamente.";
+      avisar();
+    }
+    throw err;
+  }
 }
 
 /* ───────────────────────── token ───────────────────────── */
@@ -123,6 +227,7 @@ async function montarTokenClient() {
     client_id: GOOGLE_CLIENT_ID,
     scope: ESCOPO,
     callback: () => {}, // trocado a cada pedido
+    error_callback: () => falharPedidoToken?.(),
   });
   return tokenClient;
 }
@@ -132,35 +237,62 @@ async function montarTokenClient() {
  * autorizou antes e a sessão Google está viva no navegador).
  */
 function pedirToken({ silencioso }) {
-  return new Promise(async (resolve) => {
-    const cliente = await montarTokenClient();
-    if (!cliente) return resolve(null);
-    cliente.callback = (resp) => {
-      if (resp?.access_token) {
-        token = { valor: resp.access_token, expiraEm: Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000 };
-        localStorage.setItem(CHAVE_CONECTADO, "1");
-        avisar();
-        return resolve(token.valor);
-      }
-      resolve(null);
-    };
-    try {
-      cliente.requestAccessToken(silencioso ? { prompt: "" } : { prompt: "consent" });
-    } catch (_) {
-      resolve(null);
-    }
-  });
+  if (pedidoToken) return pedidoToken;
+  const usuario = auth.currentUser;
+  if (!usuario?.email) return Promise.resolve(null);
+  const uidPedido = usuario.uid;
+  const emailPedido = usuario.email;
+  pedidoToken = (async () => {
+    const cliente = tokenClient || await montarTokenClient();
+    if (!cliente) return null;
+    return new Promise((resolve) => {
+      cliente.callback = async (resp) => {
+        if (resp?.access_token) {
+          try {
+            if (!String(resp.scope || "").split(/\s+/).includes("https://www.googleapis.com/auth/calendar.events")) {
+              throw new Error("permissao-agenda-ausente");
+            }
+            const resposta = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+              headers: { Authorization: `Bearer ${resp.access_token}` },
+            });
+            if (!resposta.ok) throw new Error("identidade-indisponivel");
+            const identidade = await resposta.json();
+            if (identidade.email_verified !== true || String(identidade.email || "").toLowerCase() !== emailPedido.toLowerCase()
+                || auth.currentUser?.uid !== uidPedido || auth.currentUser?.email !== emailPedido) {
+              throw new Error("conta-diferente");
+            }
+          } catch (_) {
+            token = null;
+            toast("Use no Google Agenda a mesma conta com que entrou no AppRotina. Nenhum evento foi enviado.", "erro", 9000);
+            return resolve(null);
+          }
+          token = { valor: resp.access_token, expiraEm: Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000 };
+          try { localStorage.setItem(CHAVE_CONECTADO, "1"); } catch (_) {}
+          avisar();
+          return resolve(token.valor);
+        }
+        resolve(null);
+      };
+      falharPedidoToken = () => {
+        toast("A janela de autorização do Google não abriu ou foi fechada. Tente conectar novamente.", "erro", 8000);
+        resolve(null);
+      };
+      try {
+        cliente.requestAccessToken({ prompt: silencioso ? "" : "consent", login_hint: emailPedido });
+      } catch (_) { falharPedidoToken(); }
+    });
+  })().catch(() => null).finally(() => { pedidoToken = null; falharPedidoToken = null; });
+  return pedidoToken;
 }
 
 /** Devolve um token válido, ou null. Nunca abre janela por conta própria. */
 async function garantirToken() {
-  if (agendaConectada()) return token.valor;
-  if (!agendaJaAutorizada()) return null;
-  return await pedirToken({ silencioso: true });
+  return agendaConectada() ? token.valor : null;
 }
 
 /** Chamado pelo botão "Conectar" nas Configurações. Pode abrir janela. */
 export async function conectarAgenda() {
+  if (DIAG.servidor?.servidorAtivo) return true;
   if (!agendaConfigurada()) {
     toast("A conexão com o Google Agenda está indisponível no momento.", "erro", 8000);
     return false;
@@ -374,6 +506,21 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
   if (!dono) return; // sem dono não há espaço pra gravar o id do evento
   const docDoDono = (colecao, id) => doc(db, "usuarios", dono, colecao, id);
   if (sincronizando) return;
+  let servidor;
+  try {
+    servidor = await carregarStatusAgenda(dono);
+  } catch (_) {
+    if (!silencioso || !avisouErroNaSessao) {
+      toast(DIAG.erroStatus, "erro", 9000);
+      avisouErroNaSessao = true;
+    }
+    return;
+  }
+  if (servidor.servidorAtivo) {
+    if (!silencioso) toast(`A sincronização automática está ativa. As mudanças chegam ao Google Agenda em até ${servidor.intervaloMinutos} minutos, mesmo com o app fechado.`, "info", 9000);
+    return;
+  }
+  if (sincronizando) return;
   if (!agendaConfigurada()) return;
 
   /*
@@ -575,7 +722,7 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
     // Teto por rodada existe pra não travar a tela. Se ele bateu, ainda há
     // fila: em vez de esperar a próxima mudança, continua sozinho.
     if (tetoBatido && !DIAG.faltouToken) {
-      setTimeout(() => sincronizarAgenda({ rotinas, tarefas, nomeCategoria, silencioso: true }), 4000);
+      setTimeout(() => sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email: dono, silencioso: true }), 4000);
     }
   }
 }
@@ -586,11 +733,25 @@ export async function sincronizarAgenda({ rotinas, tarefas, nomeCategoria, email
  * porque o documento não vai mais existir pra ser comparado.
  */
 export async function apagarEventosDe({ agendaEventoId, agendaAtrasoId }) {
-  if (!agendaConfigurada()) return;
-  const t = await garantirToken();
-  if (!t) return;
-  for (const id of [agendaEventoId, agendaAtrasoId].filter(Boolean)) {
-    try { await apagarEvento(id); } catch (err) { console.error("[agenda]", err); }
+  if (!agendaEventoId && !agendaAtrasoId) return;
+  try {
+    const servidor = await carregarStatusAgenda();
+    if (servidor.servidorAtivo) {
+      const email = auth.currentUser.email.toLowerCase();
+      await setDoc(doc(db, "usuarios", email, "agendaExclusoes", crypto.randomUUID()), {
+        agendaEventoId: agendaEventoId || null,
+        agendaAtrasoId: agendaAtrasoId || null,
+        criadoEm: Date.now(),
+      });
+      return;
+    }
+    if (!agendaConfigurada() || !(await garantirToken())) {
+      throw new Error("Conecte o Google Agenda antes de excluir este item. O evento precisa sair da agenda também.");
+    }
+    for (const id of [agendaEventoId, agendaAtrasoId].filter(Boolean)) await apagarEvento(id);
+  } catch (err) {
+    toast(DIAG.erroStatus || err.message || "Não foi possível excluir o evento do Google Agenda.", "erro", 9000);
+    throw err;
   }
 }
 
@@ -617,6 +778,9 @@ const MARCA = "Lançado pelo AppRotina.";
 const CARENCIA_MS = 10 * 60 * 1000;
 
 export async function procurarEventosOrfaos({ rotinas, tarefas, diasAtras = 120 }) {
+  if ((await carregarStatusAgenda()).servidorAtivo) {
+    throw new Error("A limpeza manual não está disponível enquanto a sincronização automática estiver ativa.");
+  }
   const t = await garantirToken();
   if (!t) throw new Error("Google Agenda não está conectado.");
 
@@ -661,6 +825,9 @@ export async function procurarEventosOrfaos({ rotinas, tarefas, diasAtras = 120 
 
 /** Apaga a lista que ele confirmou. Devolve quantos saíram e quantos falharam. */
 export async function apagarOrfaos(ids) {
+  if ((await carregarStatusAgenda()).servidorAtivo) {
+    throw new Error("A limpeza manual não está disponível enquanto a sincronização automática estiver ativa.");
+  }
   let apagados = 0, falhas = 0;
   for (const id of ids) {
     try { await apagarEvento(id); apagados++; } catch (err) { falhas++; console.error("[agenda]", err); }

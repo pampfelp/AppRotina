@@ -45,6 +45,9 @@ export const firebaseConfig = {
 */
 export const GOOGLE_CLIENT_ID = "1031461486725-71b80n9ji0dj9je3ikbu3qblsclvea90.apps.googleusercontent.com";
 
+// URL pública do sincronizador; a autorização de cada conta fica no servidor.
+export const AGENDA_SERVIDOR_URL = "";
+
 /*
   NÃO EXISTE MAIS LISTA DE AUTORIZADOS (2026-09-18). O cadastro é aberto:
   qualquer pessoa cria a própria conta, pelo Google ou por e-mail e senha, e
